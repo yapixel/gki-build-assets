@@ -13,7 +13,7 @@
   },
   "rust": {
     "revision": "4c613cfb8c5ca9689614fb2110bfd03a2a2f641a",
-    "url": "https://android.googlesource.com/platform/prebuilts/rust/+archive/4c613cfb8c5ca9689614fb2110bfd03a2a2f641a/linux-x86/1.83.0.tar.gz"
+    "url": "https://android.googlesource.com/platform/prebuilts/rust/+archive/4c613cfb8c5ca9689614fb2110bfd03a2a2f641a/linux-x86/1.82.0.tar.gz"
   },
   "clang_tools": {
     "revision": "c03d5bc912878cdcbdc38fcb003e94116b978956",
