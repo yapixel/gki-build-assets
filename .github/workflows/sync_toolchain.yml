@@ -1,9 +1,9 @@
 name: Sync Android 16 Toolchain
 
 on:
-  workflow_dispatch: # 手动触发
+  workflow_dispatch:
   schedule:
-    - cron: '0 0 * * 0' # 每周日自动执行
+    - cron: '0 0 * * 0'
 
 jobs:
   update-config:
@@ -17,37 +17,43 @@ jobs:
 
       - name: Download and Verify Manifest
         run: |
-          # 锁定 2025-06 分支
           URL="https://android.googlesource.com/kernel/manifest/+/refs/heads/common-android16-6.12-2025-06/default.xml?format=TEXT"
-          
-          echo "正在从 Google Git 下载 Manifest..."
-          if ! curl -fsL --retry 5 "$URL" | base64 -d > manifest.xml; then
-            echo "错误: 下载或解码失败。"
-            exit 1
-          fi
-
+          curl -fsL --retry 5 "$URL" | base64 -d > manifest.xml
           if [[ $(head -c 5 manifest.xml) != "<?xml" ]]; then
-            echo "错误: 下载内容非法（非 XML 格式）。"
-            cat manifest.xml | head -n 20
+            echo "错误: 下载内容非法。"
             exit 1
           fi
 
-      - name: Parse Manifest and Generate JSON
+      - name: Parse and Resolve Hashes
         shell: python
         run: |
           import xml.etree.ElementTree as ET
           import json
           import os
+          import subprocess
+
+          def get_commit_hash(repo_name, revision):
+              # 如果已经是 hash 则直接返回
+              if len(revision) == 40 and all(c in '0123456789abcdef' for c in revision.lower()):
+                  return revision
+              
+              # 如果是分支名，利用 git ls-remote 联网获取当前的 Hash
+              print(f"正在获取 {repo_name} 分支 {revision} 的最新 Hash...")
+              repo_url = f"https://android.googlesource.com/{repo_name}"
+              try:
+                  output = subprocess.check_output(['git', 'ls-remote', repo_url, revision]).decode()
+                  if output:
+                      return output.split()[0]
+              except:
+                  pass
+              return revision
 
           def generate_json():
-              manifest_file = 'manifest.xml'
-              tree = ET.parse(manifest_file)
+              tree = ET.parse('manifest.xml')
               root = tree.getroot()
 
-              # 核心：获取全局默认 Revision，防止 project 标签内缺失该属性
               default_tag = root.find('default')
               global_rev = default_tag.get('revision') if default_tag is not None else None
-              print(f"检测到全局默认 Revision: {global_rev}")
 
               config = {
                   "version_tag": "common-android16-6.12-2025-06",
@@ -55,7 +61,6 @@ jobs:
                   "toolchains": {}
               }
 
-              # 定义需要抓取的路径
               target_paths = {
                   "prebuilts/clang/host/linux-x86": "clang",
                   "prebuilts/clang-tools": "clang_tools",
@@ -68,38 +73,32 @@ jobs:
                       key = target_paths[path]
                       name = project.get('name')
                       
-                      # 优先级：项目自身 revision > 全局默认 revision
-                      revision = project.get('revision') or global_rev
+                      # 1. 提取初步 revision (可能是分支名)
+                      raw_rev = project.get('revision') or global_rev
                       
-                      if not revision:
-                          print(f"跳过 {path}: 无法找到有效的 revision")
-                          continue
-
-                      # 统一处理 Git 仓库基础地址
+                      # 2. 核心：将分支名转换为 Commit Hash
+                      revision = get_commit_hash(name, raw_rev)
+                      
                       git_base = f"https://android.googlesource.com/{name}"
                       
-                      # 根据类型生成特定格式的下载 URL
                       if key == "clang":
                           final_url = f"{git_base}/+archive/{revision}.tar.gz"
                       elif key == "clang_tools":
-                          # 匹配 bindgen 等工具所在的二进制目录
                           final_url = f"{git_base}/+archive/{revision}/linux-x86/bin.tar.gz"
                       elif key == "rust":
-                          # 锁定 Android 16 对应的 1.81.0 目录
                           final_url = f"{git_base}/+archive/{revision}/linux-x86/1.81.0.tar.gz"
 
                       config["toolchains"][key] = {
                           "revision": revision,
                           "url": final_url,
-                          "source_repo": name
+                          "source_repo": name,
+                          "original_branch": raw_rev if raw_rev != revision else None
                       }
 
-              # 写入文件
               with open('toolchain.json', 'w', encoding='utf-8') as f:
                   json.dump(config, f, indent=2, ensure_ascii=False)
               
-              print("JSON 生成成功!")
-              print(json.dumps(config, indent=2))
+              print("JSON 生成完成，已锁定 Commit Hashes。")
 
           if __name__ == "__main__":
               generate_json()
@@ -108,13 +107,10 @@ jobs:
         run: |
           git config --local user.email "github-actions[bot]@users.noreply.github.com"
           git config --local user.name "github-actions[bot]"
-          
           if [[ -n "$(git status --porcelain toolchain.json)" ]]; then
             git add toolchain.json
-            git commit -m "chore: 自动同步 Android 16 工具链配置"
+            git commit -m "chore: 锁定工具链具体 Commit Hashes"
             git push
-          else
-            echo "没有检测到内容变动。"
           fi
 
       - name: Cleanup
