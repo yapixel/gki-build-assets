@@ -61,14 +61,29 @@ jobs:
             git ls-remote "https://android.googlesource.com/$1" "$2" | cut -f1 | head -1
           }
 
+          # 获取各组件 hash
           K_REV="${{ steps.manifest.outputs.kernel_rev }}"
           K_NAME="${{ steps.manifest.outputs.kernel_name }}"
-          
           K_HASH=$(get_hash "$K_NAME" "$K_REV")
-          C_HASH=$(get_hash "${{ steps.manifest.outputs.clang_name }}" "${{ steps.manifest.outputs.clang_rev }}")
-          R_HASH=$(get_hash "${{ steps.manifest.outputs.rust_name }}" "${{ steps.manifest.outputs.rust_rev }}")
-          T_HASH=$(get_hash "${{ steps.manifest.outputs.tools_name }}" "${{ steps.manifest.outputs.tools_rev }}")
+          
+          C_NAME="${{ steps.manifest.outputs.clang_name }}"
+          C_REV="${{ steps.manifest.outputs.clang_rev }}"
+          C_HASH=$(get_hash "$C_NAME" "$C_REV")
+          
+          R_NAME="${{ steps.manifest.outputs.rust_name }}"
+          R_REV="${{ steps.manifest.outputs.rust_rev }}"
+          R_HASH=$(get_hash "$R_NAME" "$R_REV")
+          
+          T_NAME="${{ steps.manifest.outputs.tools_name }}"
+          T_REV="${{ steps.manifest.outputs.tools_rev }}"
+          T_HASH=$(get_hash "$T_NAME" "$T_REV")
 
+          # 通过 CLANG_REVISIONS.json 获取 clang 版本号
+          CLANG_JSON_URL="https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+/refs/heads/main/CLANG_REVISIONS.json?format=TEXT"
+          curl -fsL --retry 5 "$CLANG_JSON_URL" | base64 -d > clang_revisions.json
+          C_VER=$(jq -r --arg hash "$C_HASH" '.[$hash].version' clang_revisions.json)
+          
+          # 获取内核版本号
           echo "Fetching Makefile content..."
           curl -fsL "https://android.googlesource.com/$K_NAME/+/$K_HASH/Makefile?format=TEXT" | base64 -d > Makefile.tmp
           
@@ -80,6 +95,7 @@ jobs:
           echo "kernel_full_version=$V.$P.$S" >> $GITHUB_OUTPUT
           echo "kernel_hash=$K_HASH" >> $GITHUB_OUTPUT
           echo "clang_hash=$C_HASH" >> $GITHUB_OUTPUT
+          echo "clang_version=$C_VER" >> $GITHUB_OUTPUT
           echo "rust_hash=$R_HASH" >> $GITHUB_OUTPUT
           echo "tools_hash=$T_HASH" >> $GITHUB_OUTPUT
 
@@ -96,6 +112,7 @@ jobs:
             },
             "clang": {
               "revision": "${{ steps.resolve.outputs.clang_hash }}",
+              "version": "${{ steps.resolve.outputs.clang_version }}",
               "url": "https://android.googlesource.com/${{ steps.manifest.outputs.clang_name }}/+archive/${{ steps.resolve.outputs.clang_hash }}.tar.gz"
             },
             "rust": {
