@@ -130,6 +130,37 @@ jobs:
           echo "rust_version=${RUST_VER}" >> $GITHUB_OUTPUT
           echo "branch=${BRANCH}" >> $GITHUB_OUTPUT
 
+      - name: Resolve branch names to commit hashes
+        id: resolve
+        run: |
+          get_hash() {
+            local repo=$1
+            local rev=$2
+            if [[ "$rev" =~ ^[0-9a-f]{40}$ ]]; then
+              echo "$rev"
+            else
+              git ls-remote "https://android.googlesource.com/${repo}" "$rev" | cut -f1 | head -1
+            fi
+          }
+          
+          # 获取 clang-tools 的 commit hash
+          CLANG_TOOLS_NAME=$(jq -r '.["prebuilts/clang-tools"].name' kernel_manifest.json)
+          CLANG_TOOLS_REV=$(jq -r '.["prebuilts/clang-tools"].revision' kernel_manifest.json)
+          CLANG_TOOLS_HASH=$(get_hash "$CLANG_TOOLS_NAME" "$CLANG_TOOLS_REV")
+          echo "clang_tools_hash=${CLANG_TOOLS_HASH}" >> $GITHUB_OUTPUT
+          
+          # 获取 rust 的 commit hash
+          RUST_NAME=$(jq -r '.["prebuilts/rust"].name' kernel_manifest.json)
+          RUST_REV=$(jq -r '.["prebuilts/rust"].revision' kernel_manifest.json)
+          RUST_HASH=$(get_hash "$RUST_NAME" "$RUST_REV")
+          echo "rust_hash=${RUST_HASH}" >> $GITHUB_OUTPUT
+          
+          # 获取 common 的 commit hash
+          COMMON_NAME=$(jq -r '.["common"].name' kernel_manifest.json)
+          COMMON_REV=$(jq -r '.["common"].revision' kernel_manifest.json)
+          COMMON_HASH=$(get_hash "$COMMON_NAME" "$COMMON_REV")
+          echo "common_hash=${COMMON_HASH}" >> $GITHUB_OUTPUT
+
       - name: Generate complete environment JSON
         run: |
           python3 << 'EOF'
@@ -156,12 +187,33 @@ jobs:
               "components": {}
           }
           
-          # 合并所有组件
-          for path, info in kernel_components.items():
-              env_config["components"][path] = info
-          
+          # 合并 clang_manifest 中的组件（已有 hash）
           for path, info in clang_components.items():
               env_config["components"][path] = info
+          
+          # 添加内核组件（使用解析后的 hash）
+          env_config["components"]["common"] = {
+              "name": kernel_components["common"]["name"],
+              "revision": "${{ steps.resolve.outputs.common_hash }}",
+              "original_branch": kernel_components["common"]["revision"],
+              "source": "kernel_manifest"
+          }
+          
+          # 添加 clang-tools（使用解析后的 hash）
+          env_config["components"]["prebuilts/clang-tools"] = {
+              "name": kernel_components["prebuilts/clang-tools"]["name"],
+              "revision": "${{ steps.resolve.outputs.clang_tools_hash }}",
+              "original_branch": kernel_components["prebuilts/clang-tools"]["revision"],
+              "source": "kernel_manifest"
+          }
+          
+          # 添加 rust（使用解析后的 hash）
+          env_config["components"]["prebuilts/rust"] = {
+              "name": kernel_components["prebuilts/rust"]["name"],
+              "revision": "${{ steps.resolve.outputs.rust_hash }}",
+              "original_branch": kernel_components["prebuilts/rust"]["revision"],
+              "source": "kernel_manifest"
+          }
           
           # 添加 clang 版本信息
           env_config["clang_toolchain"] = {
@@ -173,7 +225,6 @@ jobs:
               json.dump(env_config, f, indent=2)
           
           print("Generated env-14043575.json")
-          print(json.dumps(env_config, indent=2))
           EOF
 
       - name: Commit and push JSON
