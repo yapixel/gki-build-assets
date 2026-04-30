@@ -50,26 +50,25 @@ jobs:
           
           if gh release view "$TAG" --repo yapixel/gki-build-assets --json assets -q ".assets[].name" | grep -q "$FILE"; then
             echo "$FILE already exists, skipping"
-            exit 0
+          else
+            aria2c -s16 -x16 -k1M "${{ steps.config.outputs.clang_url }}" -o "$FILE"
+            gh release upload "$TAG" "$FILE" --repo yapixel/gki-build-assets --clobber
+            rm "$FILE"
           fi
-          
-          aria2c -s16 -x16 -k1M "${{ steps.config.outputs.clang_url }}" -o "$FILE"
-          gh release upload "$TAG" "$FILE" --repo yapixel/gki-build-assets --clobber
-          rm "$FILE"
 
       - name: Process rust
         run: |
           TAG="${{ steps.config.outputs.clang_version }}"
+          RUST_VER="${{ steps.config.outputs.rust_version }}"
           FILE="rust-${RUST_VER}.tar.gz"
           
           if gh release view "$TAG" --repo yapixel/gki-build-assets --json assets -q ".assets[].name" | grep -q "$FILE"; then
             echo "$FILE already exists, skipping"
-            exit 0
+          else
+            aria2c -s16 -x16 -k1M "${{ steps.config.outputs.rust_url }}" -o "$FILE"
+            gh release upload "$TAG" "$FILE" --repo yapixel/gki-build-assets --clobber
+            rm "$FILE"
           fi
-          
-          aria2c -s16 -x16 -k1M "${{ steps.config.outputs.rust_url }}" -o "$FILE"
-          gh release upload "$TAG" "$FILE" --repo yapixel/gki-build-assets --clobber
-          rm "$FILE"
 
       - name: Process clang-tools
         run: |
@@ -78,12 +77,11 @@ jobs:
           
           if gh release view "$TAG" --repo yapixel/gki-build-assets --json assets -q ".assets[].name" | grep -q "$FILE"; then
             echo "$FILE already exists, skipping"
-            exit 0
+          else
+            aria2c -s16 -x16 -k1M "${{ steps.config.outputs.tools_url }}" -o "$FILE"
+            gh release upload "$TAG" "$FILE" --repo yapixel/gki-build-assets --clobber
+            rm "$FILE"
           fi
-          
-          aria2c -s16 -x16 -k1M "${{ steps.config.outputs.tools_url }}" -o "$FILE"
-          gh release upload "$TAG" "$FILE" --repo yapixel/gki-build-assets --clobber
-          rm "$FILE"
 
       - name: Process build-tools
         run: |
@@ -92,12 +90,11 @@ jobs:
           
           if gh release view "$TAG" --repo yapixel/gki-build-assets --json assets -q ".assets[].name" | grep -q "$FILE"; then
             echo "$FILE already exists, skipping"
-            exit 0
+          else
+            aria2c -s16 -x16 -k1M "${{ steps.config.outputs.build_tools_url }}" -o "$FILE"
+            gh release upload "$TAG" "$FILE" --repo yapixel/gki-build-assets --clobber
+            rm "$FILE"
           fi
-          
-          aria2c -s16 -x16 -k1M "${{ steps.config.outputs.build_tools_url }}" -o "$FILE"
-          gh release upload "$TAG" "$FILE" --repo yapixel/gki-build-assets --clobber
-          rm "$FILE"
 
       - name: Process kernel
         run: |
@@ -110,9 +107,8 @@ jobs:
           
           if gh release view "$TAG" --repo yapixel/gki-build-assets --json assets -q ".assets[].name" | grep -q "$FILE"; then
             echo "$FILE already exists, skipping"
-            exit 0
+          else
+            aria2c -s16 -x16 -k1M "${{ steps.config.outputs.kernel_url }}" -o "$FILE"
+            gh release upload "$TAG" "$FILE" --repo yapixel/gki-build-assets --clobber
+            rm "$FILE"
           fi
-          
-          aria2c -s16 -x16 -k1M "${{ steps.config.outputs.kernel_url }}" -o "$FILE"
-          gh release upload "$TAG" "$FILE" --repo yapixel/gki-build-assets --clobber
-          rm "$FILE"
