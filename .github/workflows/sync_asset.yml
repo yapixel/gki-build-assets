@@ -22,12 +22,14 @@ jobs:
           KERNEL_TAG=$(jq -r '.kernel_tag' toolchains.json)
           KERNEL_URL=$(jq -r '.kernel.url' toolchains.json)
           CLANG_URL=$(jq -r '.clang.url' toolchains.json)
+          CLANG_VER=$(jq -r '.clang.version' toolchains.json)
           RUST_URL=$(jq -r '.rust.url' toolchains.json)
           TOOLS_URL=$(jq -r '.clang_tools.url' toolchains.json)
           
           echo "kernel_tag=${KERNEL_TAG}" >> $GITHUB_OUTPUT
           echo "kernel_url=${KERNEL_URL}" >> $GITHUB_OUTPUT
           echo "clang_url=${CLANG_URL}" >> $GITHUB_OUTPUT
+          echo "clang_version=${CLANG_VER}" >> $GITHUB_OUTPUT
           echo "rust_url=${RUST_URL}" >> $GITHUB_OUTPUT
           echo "tools_url=${TOOLS_URL}" >> $GITHUB_OUTPUT
 
@@ -67,28 +69,9 @@ jobs:
             exit 1
           fi
 
-      - name: Extract clang version
-        id: clang_version
-        run: |
-          mkdir -p /tmp/clang_extract
-          tar -xzf clang.tar.gz -C /tmp/clang_extract --wildcards '*/bin/clang' --strip-components=2 2>/dev/null
-          chmod +x /tmp/clang_extract/clang
-          
-          CLANG_VER=$(/tmp/clang_extract/clang --version 2>/dev/null | grep -oP 'based on \Kr[0-9]+' | head -1)
-          
-          if [ -z "$CLANG_VER" ]; then
-            echo "Error: Failed to extract clang version"
-            exit 1
-          fi
-          
-          echo "clang_version=${CLANG_VER}" >> $GITHUB_OUTPUT
-          echo "Clang version: ${CLANG_VER}"
-          
-          rm -rf /tmp/clang_extract
-
       - name: Create toolchain release
         run: |
-          TOOLCHAIN_TAG="${{ steps.clang_version.outputs.clang_version }}"
+          TOOLCHAIN_TAG="${{ steps.config.outputs.clang_version }}"
           
           if gh release view "$TOOLCHAIN_TAG" -R yapixel/gki-build-assets &>/dev/null; then
             echo "Release $TOOLCHAIN_TAG already exists, skipping..."
