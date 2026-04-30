@@ -27,6 +27,11 @@ jobs:
       - name: Read toolchains.json
         id: read_json
         run: |
+          if [ ! -f "popsicle_config/config/toolchains.json" ]; then
+            echo "Error: toolchains.json not found in popsicle_ksu_workflow/config/"
+            echo "Please add the file first"
+            exit 1
+          fi
           echo "TOOLCHAINS=$(cat popsicle_config/config/toolchains.json | jq -c .)" >> $GITHUB_ENV
 
       - name: Sync each toolchain version
