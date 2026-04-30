@@ -1,4 +1,4 @@
-name: AOSP Toolchain Sync (Final Truth)
+name: AOSP Toolchain Sync
 
 on:
   workflow_dispatch:
@@ -50,7 +50,7 @@ jobs:
               url = f"{base_url}/{repo}"
               return subprocess.check_output(["git", "ls-remote", url, rev]).decode().split()[0]
 
-          # 1. 物理定位：锁定 Manifest 对应的 Commit
+          # 1. 锁定物理哈希
           m_raw = fetch_raw("kernel/manifest", f"refs/heads/{tag}", "default.xml")
           if not m_raw: sys.exit(1)
           root = ET.fromstring(m_raw)
@@ -72,11 +72,13 @@ jobs:
                       "hash": get_hash(p.get('name'), p.get('revision') or def_rev)
                   }
 
-          # 2. 物理提取函数：严防 .p1 截断
+          # 2. 物理提取函数：加固版，支持 Makefile (VAR = VAL) 和 Constants (VAR=VAL)
           def extract_truth(text, key):
-              text = text.replace('\r', '') # 处理可能的 CRLF
+              text = text.replace('\r', '')
               for line in text.splitlines():
-                  if line.strip().startswith(f"{key}="):
+                  line = line.strip()
+                  # 同时兼容 "KEY=" 和 "KEY ="
+                  if line.startswith(f"{key}=") or line.startswith(f"{key} =") or line.startswith(f"{key}\t="):
                       val = line.split('=', 1)[1].split('#')[0].strip()
                       return val.replace('"', '').replace("'", "")
               return "UNKNOWN"
@@ -84,7 +86,8 @@ jobs:
           mk_text = fetch_raw(nodes['common']['repo'], nodes['common']['hash'], "Makefile")
           const_text = fetch_raw(nodes['common']['repo'], nodes['common']['hash'], "build.config.constants")
 
-          real_ver = f"{extract_truth(mk_text, 'VERSION', '.')}.{extract_truth(mk_text, 'PATCHLEVEL', '.')}.{extract_truth(mk_text, 'SUBLEVEL', '.')}"
+          # 修正点：移除多余的 '.' 参数
+          real_ver = f"{extract_truth(mk_text, 'VERSION')}.{extract_truth(mk_text, 'PATCHLEVEL')}.{extract_truth(mk_text, 'SUBLEVEL')}"
           clang_v = extract_truth(const_text, "CLANG_VERSION")
           rust_v = extract_truth(const_text, "RUSTC_VERSION")
 
