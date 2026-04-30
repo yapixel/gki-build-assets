@@ -1,0 +1,86 @@
+name: Sync Android 16 Toolchain
+
+on:
+  workflow_dispatch: # 手动触发
+  schedule:
+    - cron: '0 0 * * 0' # 每周日自动同步一次
+
+jobs:
+  generate-json:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Download Official Manifest
+        run: |
+          # 下载你指定的 2025-06 锁定版本清单
+          curl -Lo manifest.xml https://android.googlesource.com/kernel/manifest/+/refs/heads/common-android16-6.12-2025-06/default.xml?format=TEXT | base64 -d > manifest.xml
+
+      - name: Parse Manifest and Generate JSON
+        shell: python
+        run: |
+          import xml.etree.ElementTree as ET
+          import json
+          import os
+
+          def get_toolchain():
+              tree = ET.parse('manifest.xml')
+              root = tree.getroot()
+              
+              # 初始化数据结构
+              result = {
+                  "version_tag": "common-android16-6.12-2025-06",
+                  "toolchains": {}
+              }
+              
+              # 核心组件定义
+              components = {
+                  "prebuilts/clang/host/linux-x86": "clang",
+                  "prebuilts/clang-tools": "clang_tools",
+                  "prebuilts/rust": "rust"
+              }
+
+              for project in root.findall('project'):
+                  path = project.get('path')
+                  if path in components:
+                      name = components[path]
+                      revision = project.get('revision')
+                      git_name = project.get('name')
+                      
+                      # 生成对应的下载链接
+                      if name == "clang":
+                          url = f"https://android.googlesource.com/{git_name}/+archive/{revision}.tar.gz"
+                      elif name == "clang_tools":
+                          # clang-tools 我们只需要 linux-x86/bin 目录
+                          url = f"https://android.googlesource.com/{git_name}/+archive/{revision}/linux-x86/bin.tar.gz"
+                      elif name == "rust":
+                          # 锁定 1.81.0 路径
+                          url = f"https://android.googlesource.com/{git_name}/+archive/{revision}/linux-x86/1.81.0.tar.gz"
+                      
+                      result["toolchains"][name] = {
+                          "path": path,
+                          "revision": revision,
+                          "url": url
+                      }
+              
+              # 写入 JSON
+              with open('toolchain.json', 'w') as f:
+                  json.dump(result, f, indent=2)
+              print("Successfully generated toolchain.json")
+
+          if __name__ == "__main__":
+              get_toolchain()
+
+      - name: Upload Toolchain JSON
+        uses: actions/upload-artifact@v4
+        with:
+          name: android16-toolchain-config
+          path: toolchain.json
+
+      - name: Commit and Push if Changed
+        run: |
+          git config --local user.email "github-actions[bot]@users.noreply.github.com"
+          git config --local user.name "github-actions[bot]"
+          git add toolchain.json
+          git diff --quiet && git diff --staged --quiet || (git commit -m "chore: update toolchain hashes from manifest" && git push)
