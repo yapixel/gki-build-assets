@@ -1,15 +1,15 @@
 name: Sync Android 16 Toolchain
 
 on:
-  workflow_dispatch: # 手动触发测试
+  workflow_dispatch: # 手动触发
   schedule:
-    - cron: '0 0 * * 0' # 每周日午夜自动同步更新
+    - cron: '0 0 * * 0' # 每周日自动执行
 
 jobs:
   update-config:
     runs-on: ubuntu-latest
     permissions:
-      contents: write # 赋予 Actions 提交代码到仓库的权限
+      contents: write
 
     steps:
       - name: Checkout Repository
@@ -17,23 +17,20 @@ jobs:
 
       - name: Download and Verify Manifest
         run: |
-          # 定义目标清单 URL (2025-06 锁定分支)
+          # 锁定 2025-06 分支
           URL="https://android.googlesource.com/kernel/manifest/+/refs/heads/common-android16-6.12-2025-06/default.xml?format=TEXT"
           
           echo "正在从 Google Git 下载 Manifest..."
-          # 使用 -f 遇错停止, -sL 靜默跟随重定向, --retry 增加稳定性
           if ! curl -fsL --retry 5 "$URL" | base64 -d > manifest.xml; then
-            echo "错误: 下载或 Base64 解码失败。请检查网络或 URL。"
+            echo "错误: 下载或解码失败。"
             exit 1
           fi
 
-          # 验证下载的文件开头是否为标准的 XML 声明
           if [[ $(head -c 5 manifest.xml) != "<?xml" ]]; then
-            echo "错误: 下载的文件不是有效的 XML 格式！"
+            echo "错误: 下载内容非法（非 XML 格式）。"
             cat manifest.xml | head -n 20
             exit 1
           fi
-          echo "Manifest 下载成功并已验证格式。"
 
       - name: Parse Manifest and Generate JSON
         shell: python
@@ -44,20 +41,21 @@ jobs:
 
           def generate_json():
               manifest_file = 'manifest.xml'
-              if not os.path.exists(manifest_file):
-                  raise FileNotFoundError("找不到 manifest.xml 文件")
-
               tree = ET.parse(manifest_file)
               root = tree.getroot()
 
-              # 初始化输出结构
+              # 核心：获取全局默认 Revision，防止 project 标签内缺失该属性
+              default_tag = root.find('default')
+              global_rev = default_tag.get('revision') if default_tag is not None else None
+              print(f"检测到全局默认 Revision: {global_rev}")
+
               config = {
                   "version_tag": "common-android16-6.12-2025-06",
                   "last_sync": os.popen('date -u +"%Y-%m-%dT%H:%M:%SZ"').read().strip(),
                   "toolchains": {}
               }
 
-              # 定义需要寻找的项目路径及其映射名称
+              # 定义需要抓取的路径
               target_paths = {
                   "prebuilts/clang/host/linux-x86": "clang",
                   "prebuilts/clang-tools": "clang_tools",
@@ -69,30 +67,39 @@ jobs:
                   if path in target_paths:
                       key = target_paths[path]
                       name = project.get('name')
-                      revision = project.get('revision')
+                      
+                      # 优先级：项目自身 revision > 全局默认 revision
+                      revision = project.get('revision') or global_rev
+                      
+                      if not revision:
+                          print(f"跳过 {path}: 无法找到有效的 revision")
+                          continue
 
-                      # 根据组件类型生成对应的下载链接
+                      # 统一处理 Git 仓库基础地址
+                      git_base = f"https://android.googlesource.com/{name}"
+                      
+                      # 根据类型生成特定格式的下载 URL
                       if key == "clang":
-                          # 编译器全包
-                          url = f"https://android.googlesource.com/{name}/+archive/{revision}.tar.gz"
+                          final_url = f"{git_base}/+archive/{revision}.tar.gz"
                       elif key == "clang_tools":
-                          # 工具类只取 linux-x86/bin 下的二进制
-                          url = f"https://android.googlesource.com/{name}/+archive/{revision}/linux-x86/bin.tar.gz"
+                          # 匹配 bindgen 等工具所在的二进制目录
+                          final_url = f"{git_base}/+archive/{revision}/linux-x86/bin.tar.gz"
                       elif key == "rust":
-                          # 锁定 1.81.0 目录
-                          url = f"https://android.googlesource.com/{name}/+archive/{revision}/linux-x86/1.81.0.tar.gz"
+                          # 锁定 Android 16 对应的 1.81.0 目录
+                          final_url = f"{git_base}/+archive/{revision}/linux-x86/1.81.0.tar.gz"
 
                       config["toolchains"][key] = {
                           "revision": revision,
-                          "url": url,
+                          "url": final_url,
                           "source_repo": name
                       }
 
-              # 将结果写入 toolchain.json
+              # 写入文件
               with open('toolchain.json', 'w', encoding='utf-8') as f:
                   json.dump(config, f, indent=2, ensure_ascii=False)
               
-              print("JSON 生成成功，包含组件: " + ", ".join(config["toolchains"].keys()))
+              print("JSON 生成成功!")
+              print(json.dumps(config, indent=2))
 
           if __name__ == "__main__":
               generate_json()
@@ -102,14 +109,12 @@ jobs:
           git config --local user.email "github-actions[bot]@users.noreply.github.com"
           git config --local user.name "github-actions[bot]"
           
-          # 仅在文件有变化时提交
           if [[ -n "$(git status --porcelain toolchain.json)" ]]; then
             git add toolchain.json
-            git commit -m "chore: 自动同步 Android 16 工具链 Hash (2025-06)"
+            git commit -m "chore: 自动同步 Android 16 工具链配置"
             git push
-            echo "检测到 Hash 变动，已推送到仓库。"
           else
-            echo "Hash 未发生变化，无需更新。"
+            echo "没有检测到内容变动。"
           fi
 
       - name: Cleanup
