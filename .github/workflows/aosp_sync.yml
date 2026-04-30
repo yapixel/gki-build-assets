@@ -24,10 +24,9 @@ jobs:
           python-version: '3.10'
 
       - name: Install Dependencies
-        # 修复点：必须手动安装 requests 才能运行后续脚本
         run: pip install requests
 
-      - name: Resolve Environment
+      - name: Resolve Environment (Strict Parsing)
         shell: python
         run: |
           import xml.etree.ElementTree as ET
@@ -51,11 +50,12 @@ jobs:
           def get_hash(repo, rev):
               url = f"{base_url}/{repo}"
               try:
+                  # 物理对齐：获取此时此刻该引用的 40 位死哈希
                   return subprocess.check_output(["git", "ls-remote", url, rev]).decode().split()[0]
               except:
                   return rev
 
-          # 1. 解析 Manifest 锁定哈希
+          # 1. 解析 Manifest
           m_raw = fetch_raw("kernel/manifest", f"refs/heads/{tag}", "default.xml")
           if not m_raw:
               print(f"Error: Cannot find manifest for {tag}")
@@ -64,7 +64,7 @@ jobs:
           root = ET.fromstring(m_raw)
           def_rev = root.find('default').get('revision')
 
-          # 物理仓库映射
+          # 物理仓库映射（对应 AOSP 目录结构）
           mapping = {
               "common": "kernel/common",
               "prebuilts/clang/host/linux-x86": "platform/prebuilts/clang/host/linux-x86",
@@ -81,28 +81,35 @@ jobs:
                       "hash": get_hash(p.get('name'), p.get('revision') or def_rev)
                   }
 
-          # 2. 远程读取 Makefile (精准抓取 VERSION.PATCHLEVEL.SUBLEVEL)
+          # 2. 严格解析真理文件 (Makefile & Constants)
+          def get_value_from_text(text, key, separator="="):
+              """
+              加固版提取逻辑：
+              - 逐行扫描
+              - 剥离 Shell 注释 (#)
+              - 剥离所有引号 (" 或 ')
+              - 物理还原所有字符（包含 .p1 等后缀）
+              """
+              for line in text.splitlines():
+                  clean_line = line.strip()
+                  if clean_line.startswith(f"{key}{separator}") or clean_line.startswith(f"{key} {separator}"):
+                      parts = clean_line.split(separator, 1)
+                      if len(parts) > 1:
+                          val = parts[1].split('#')[0].strip() # 剥离注释
+                          return val.replace('"', '').replace("'", "")
+              return "unknown"
+
+          # 提取 Makefile 版本 (6.12.x)
           mk_text = fetch_raw(nodes['common']['repo'], nodes['common']['hash'], "Makefile")
-          def get_mk(key):
-              # 匹配 VERSION = 6 这种带空格的赋值
-              match = re.search(rf'^{key}\s*=\s*(\d+)', mk_text, re.M)
-              return match.group(1) if match else "0"
-          
-          real_ver = f"{get_mk('VERSION')}.{get_mk('PATCHLEVEL')}.{get_mk('SUBLEVEL')}"
+          real_ver = f"{get_value_from_text(mk_text, 'VERSION')}.{get_value_from_text(mk_text, 'PATCHLEVEL')}.{get_value_from_text(mk_text, 'SUBLEVEL')}"
 
-          # 3. 远程读取 Constants (物理搬运 Clang/Rust 契约)
+          # 提取 Constants 契约 (rXXXX, 1.x.x.p1)
           const_text = fetch_raw(nodes['common']['repo'], nodes['common']['hash'], "build.config.constants")
-          def get_const(key):
-              # 严禁丢掉 .p1：匹配到行尾，剥离潜在引号
-              match = re.search(rf'^{key}=["\']?([^\s"\']+)["\']?$', const_text, re.M)
-              return match.group(1) if match else "unknown"
+          off_branch = get_value_from_text(const_text, "BRANCH")
+          clang_v    = get_value_from_text(const_text, "CLANG_VERSION")
+          rust_v     = get_value_from_text(const_text, "RUSTC_VERSION")
 
-          off_branch = get_const("BRANCH")
-          clang_v = get_const("CLANG_VERSION")
-          rust_v = get_const("RUSTC_VERSION")
-
-          # 4. 构造 JSON
-          time_stamp = "-".join(tag.split('-')[-2:])
+          # 3. 构造 100% 物理对齐的 JSON
           result = {
               "manifest_tag": tag,
               "kernel_info": {
@@ -123,6 +130,10 @@ jobs:
                   "rust": {
                       "revision": nodes['prebuilts/rust']['hash'],
                       "url": f"{base_url}/{nodes['prebuilts/rust']['repo']}/+archive/{nodes['prebuilts/rust']['hash']}/linux-x86/{rust_v}.tar.gz"
+                  },
+                  "clang_tools": {
+                      "revision": nodes['prebuilts/clang-tools']['hash'],
+                      "url": f"{base_url}/{nodes['prebuilts/clang-tools']['repo']}/+archive/{nodes['prebuilts/clang-tools']['hash']}/linux-x86/bin.tar.gz"
                   }
               }
           }
@@ -135,5 +146,5 @@ jobs:
           git config --local user.email "action@github.com"
           git config --local user.name "GitHub Action"
           git add toolchains.json
-          git commit -m "Sync AOSP version for ${{ github.event.inputs.manifest_tag }}" || exit 0
+          git commit -m "Sync: ${{ github.event.inputs.manifest_tag }} (Real: $(jq -r '.kernel_info.real_version' toolchains.json))" || exit 0
           git push
