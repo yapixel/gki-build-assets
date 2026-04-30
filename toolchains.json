@@ -7,7 +7,21 @@
     "rust_version": "1.82.0.p1"
   },
   "artifacts": {
-    "kernel": { "revision": "c24e8b63076ebc75e83ec3182e9ec9075eb667ef", "url": "https://android.googlesource.com/kernel/common/+archive/c24e8b63076ebc75e83ec3182e9ec9075eb667ef.tar.gz" },
-    "rust": { "url": "https://android.googlesource.com/platform/prebuilts/rust/+archive/b9c747ff3d3c30c2014b6f94f8599415010ac37f/linux-x86/1.82.0.p1.tar.gz" }
+    "kernel": { 
+      "revision": "c24e8b63076ebc75e83ec3182e9ec9075eb667ef", 
+      "url": "https://android.googlesource.com/kernel/common/+archive/c24e8b63076ebc75e83ec3182e9ec9075eb667ef.tar.gz" 
+    },
+    "clang": { 
+      "revision": "70a12c4fe88940ab2b0e6d763492dffa2f07e15a",
+      "url": "https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/70a12c4fe88940ab2b0e6d763492dffa2f07e15a/clang-r536225.tar.gz" 
+    },
+    "rust": { 
+      "revision": "b9c747ff3d3c30c2014b6f94f8599415010ac37f",
+      "url": "https://android.googlesource.com/platform/prebuilts/rust/+archive/b9c747ff3d3c30c2014b6f94f8599415010ac37f/linux-x86/1.82.0.p1.tar.gz" 
+    },
+    "clang_tools": { 
+      "revision": "2e77dab4d331387ed8036a3b2ae9fa48ca2f74a4",
+      "url": "https://android.googlesource.com/platform/prebuilts/clang-tools/+archive/2e77dab4d331387ed8036a3b2ae9fa48ca2f74a4/linux-x86/bin.tar.gz" 
+    }
   }
 }
