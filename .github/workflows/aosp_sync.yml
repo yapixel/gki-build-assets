@@ -1,4 +1,4 @@
-name: AOSP Toolchain Sync (Evidence Mode)
+name: AOSP Toolchain Sync (Final Truth)
 
 on:
   workflow_dispatch:
@@ -7,6 +7,9 @@ on:
         description: 'AOSP Manifest Tag'
         required: true
         default: 'common-android16-6.12-2025-06'
+
+permissions:
+  contents: write
 
 jobs:
   sync:
@@ -23,13 +26,12 @@ jobs:
       - name: Install Dependencies
         run: pip install requests
 
-      - name: Resolve Environment
+      - name: Generate Toolchain JSON
         shell: python
         run: |
           import xml.etree.ElementTree as ET
           import requests
           import base64
-          import re
           import json
           import subprocess
           import sys
@@ -41,42 +43,87 @@ jobs:
               url = f"{base_url}/{repo}/+/{commit}/{path}?format=TEXT"
               r = requests.get(url)
               if r.status_code == 200:
-                  # 还原原始文本
                   return base64.b64decode(r.text).decode('utf-8', errors='ignore')
               return ""
 
-          # 1. 锁定哈希
-          # ... (省略重复的 ls-remote 逻辑，直接进入关键点) ...
+          def get_hash(repo, rev):
+              url = f"{base_url}/{repo}"
+              return subprocess.check_output(["git", "ls-remote", url, rev]).decode().split()[0]
+
+          # 1. 物理定位：锁定 Manifest 对应的 Commit
           m_raw = fetch_raw("kernel/manifest", f"refs/heads/{tag}", "default.xml")
+          if not m_raw: sys.exit(1)
           root = ET.fromstring(m_raw)
           def_rev = root.find('default').get('revision')
+
+          mapping = {
+              "common": "kernel/common",
+              "prebuilts/clang/host/linux-x86": "platform/prebuilts/clang/host/linux-x86",
+              "prebuilts/rust": "platform/prebuilts/rust",
+              "prebuilts/clang-tools": "platform/prebuilts/clang-tools"
+          }
           
-          # 获取 kernel/common 的物理哈希
-          kernel_repo = ""
+          nodes = {}
           for p in root.findall('project'):
-              if p.get('path') == "common":
-                  kernel_repo = p.get('name')
-                  break
-          
-          target_hash = subprocess.check_output(["git", "ls-remote", f"{base_url}/{kernel_repo}", "android16-6.12"]).decode().split()[0]
+              path = p.get('path')
+              if path in mapping:
+                  nodes[path] = {
+                      "repo": p.get('name'),
+                      "hash": get_hash(p.get('name'), p.get('revision') or def_rev)
+                  }
 
-          # 2. 【核心物证环节】获取并打印原始文本
-          const_text = fetch_raw(kernel_repo, target_hash, "build.config.constants")
-          
-          print("="*50)
-          print(f"DEBUG: RAW CONTENT OF build.config.constants (Hash: {target_hash})")
-          print("-"*50)
-          print(const_text) # 直接输出原始文本，哪怕有隐藏字符也能看到
-          print("="*50)
-
-          # 3. 严格提取
-          def get_val(text, key):
+          # 2. 物理提取函数：严防 .p1 截断
+          def extract_truth(text, key):
+              text = text.replace('\r', '') # 处理可能的 CRLF
               for line in text.splitlines():
                   if line.strip().startswith(f"{key}="):
-                      return line.split('=', 1)[1].strip().strip('"').strip("'").split('#')[0].strip()
-              return "NOT_FOUND"
+                      val = line.split('=', 1)[1].split('#')[0].strip()
+                      return val.replace('"', '').replace("'", "")
+              return "UNKNOWN"
 
-          rust_v = get_val(const_text, "RUSTC_VERSION")
-          print(f"DEBUG: EXTRACTED RUST_VERSION -> [{rust_v}]")
+          mk_text = fetch_raw(nodes['common']['repo'], nodes['common']['hash'], "Makefile")
+          const_text = fetch_raw(nodes['common']['repo'], nodes['common']['hash'], "build.config.constants")
 
-          # ... (后续生成 toolchains.json 的逻辑保持不变) ...
+          real_ver = f"{extract_truth(mk_text, 'VERSION', '.')}.{extract_truth(mk_text, 'PATCHLEVEL', '.')}.{extract_truth(mk_text, 'SUBLEVEL', '.')}"
+          clang_v = extract_truth(const_text, "CLANG_VERSION")
+          rust_v = extract_truth(const_text, "RUSTC_VERSION")
+
+          # 3. 构造输出
+          result = {
+              "manifest_tag": tag,
+              "kernel_info": {
+                  "official_branch": extract_truth(const_text, "BRANCH"),
+                  "real_version": real_ver.replace('UNKNOWN', '0'),
+                  "clang_version": clang_v,
+                  "rust_version": rust_v
+              },
+              "artifacts": {
+                  "kernel": {
+                      "revision": nodes['common']['hash'],
+                      "url": f"{base_url}/{nodes['common']['repo']}/+archive/{nodes['common']['hash']}.tar.gz"
+                  },
+                  "clang": {
+                      "revision": nodes['prebuilts/clang/host/linux-x86']['hash'],
+                      "url": f"{base_url}/{nodes['prebuilts/clang/host/linux-x86']['repo']}/+archive/{nodes['prebuilts/clang/host/linux-x86']['hash']}/clang-{clang_v}.tar.gz"
+                  },
+                  "rust": {
+                      "revision": nodes['prebuilts/rust']['hash'],
+                      "url": f"{base_url}/{nodes['prebuilts/rust']['repo']}/+archive/{nodes['prebuilts/rust']['hash']}/linux-x86/{rust_v}.tar.gz"
+                  },
+                  "clang_tools": {
+                      "revision": nodes['prebuilts/clang-tools']['hash'],
+                      "url": f"{base_url}/{nodes['prebuilts/clang-tools']['repo']}/+archive/{nodes['prebuilts/clang-tools']['hash']}/linux-x86/bin.tar.gz"
+                  }
+              }
+          }
+
+          with open('toolchains.json', 'w') as f:
+              json.dump(result, f, indent=2)
+
+      - name: Commit and Push
+        run: |
+          git config --local user.email "action@github.com"
+          git config --local user.name "GitHub Action"
+          git add toolchains.json
+          git commit -m "Sync: ${{ github.event.inputs.manifest_tag }}" || exit 0
+          git push
