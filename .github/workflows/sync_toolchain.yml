@@ -9,20 +9,24 @@ on:
         type: string
         default: 'common-android16-6.12-2025-06'
 
+permissions:
+  contents: write
+
 jobs:
   parse:
     runs-on: ubuntu-latest
     steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
       - name: Download and Parse Manifest
         id: manifest
         run: |
           TAG="${{ inputs.kernel_tag }}"
           URL="https://android.googlesource.com/kernel/manifest/+/refs/heads/${TAG}/default.xml?format=TEXT"
           
-          # 下载并解码
           curl -fsL --retry 5 "$URL" | base64 -d > manifest.xml
           
-          # 使用 Python 提取核心组件信息
           python3 << 'EOF'
           import xml.etree.ElementTree as ET
           import os
@@ -53,7 +57,6 @@ jobs:
       - name: Resolve Hashes and Version
         id: resolve
         run: |
-          # 1. 转换 Hash 函数
           get_hash() {
             git ls-remote "https://android.googlesource.com/$1" "$2" | cut -f1 | head -1
           }
@@ -66,8 +69,6 @@ jobs:
           R_HASH=$(get_hash "${{ steps.manifest.outputs.rust_name }}" "${{ steps.manifest.outputs.rust_rev }}")
           T_HASH=$(get_hash "${{ steps.manifest.outputs.tools_name }}" "${{ steps.manifest.outputs.tools_rev }}")
 
-          # 2. 核心：通过 REST API 获取 Makefile 并解析 6.12.23
-          # 使用 +/refs/heads/ 或 +/<hash> 访问
           echo "Fetching Makefile content..."
           curl -fsL "https://android.googlesource.com/$K_NAME/+/$K_HASH/Makefile?format=TEXT" | base64 -d > Makefile.tmp
           
@@ -82,7 +83,7 @@ jobs:
           echo "rust_hash=$R_HASH" >> $GITHUB_OUTPUT
           echo "tools_hash=$T_HASH" >> $GITHUB_OUTPUT
 
-      - name: Generate JSON
+      - name: Generate toolchains.json
         run: |
           cat <<EOF > toolchains.json
           {
@@ -109,8 +110,10 @@ jobs:
           EOF
           cat toolchains.json
 
-      - name: Upload Artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: toolchain-config
-          path: toolchains.json
+      - name: Commit and push toolchains.json
+        run: |
+          git config --local user.email "github-actions[bot]@users.noreply.github.com"
+          git config --local user.name "github-actions[bot]"
+          git add toolchains.json
+          git diff --quiet && git diff --staged --quiet || git commit -m "Update toolchains.json for ${{ inputs.kernel_tag }}"
+          git push
