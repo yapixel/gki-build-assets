@@ -1,4 +1,4 @@
-name: Parse and Sync Manifest
+name: Deterministic Toolchain Sync
 
 on:
   workflow_dispatch:
@@ -12,7 +12,7 @@ permissions:
   contents: write
 
 jobs:
-  parse-and-commit:
+  sync-logic:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
@@ -20,111 +20,110 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Download Manifest
-        run: |
-          TAG="${{ inputs.manifest_branch }}"
-          URL="https://android.googlesource.com/kernel/manifest/+/refs/heads/${TAG}/default.xml?format=TEXT"
-          curl -fsL --retry 5 "$URL" | base64 -d > manifest.xml
+      - name: Install dependencies
+        run: pip install requests
 
-      - name: Pure Hash Tracking Parse
-        id: resolve
+      - name: Resolve and Map Toolchains
         shell: python
         run: |
           import xml.etree.ElementTree as ET
           import os, requests, base64, re, json, subprocess
 
-          # 1. 强制获取 40 位静态哈希
-          def get_static_hash(repo_name, rev):
-              if re.match(r'^[0-9a-f]{40}$', rev): return rev
-              url = f"https://android.googlesource.com/{repo_name}"
+          # --- 核心工具函数 ---
+          def get_static_hash(repo, rev):
+              """将动态分支名转化为 40 位死哈希"""
+              url = f"https://android.googlesource.com/{repo}"
               try:
                   out = subprocess.check_output(["git", "ls-remote", url, rev]).decode()
                   return out.split()[0]
               except: return rev
 
-          tree = ET.parse('manifest.xml')
-          root = tree.getroot()
-          default_tag = root.find('default')
-          default_rev = default_tag.get('revision', '') if default_tag is not None else ""
+          def fetch_raw_text(repo, rev, path):
+              """直接从 Google Git 物理寻址读取文本文件"""
+              url = f"https://android.googlesource.com/{repo}/+/{rev}/{path}?format=TEXT"
+              r = requests.get(url, timeout=15)
+              if r.status_code == 200:
+                  return base64.b64decode(r.text).decode('utf-8', errors='ignore')
+              return ""
 
-          targets = {
+          # --- 步骤 1: 解析 XML 锁定哈希 ---
+          tag = "${{ inputs.manifest_branch }}"
+          manifest_url = f"https://android.googlesource.com/kernel/manifest/+/refs/heads/{tag}/default.xml?format=TEXT"
+          manifest_raw = base64.b64decode(requests.get(manifest_url).text).decode()
+          root = ET.fromstring(manifest_raw)
+          
+          default_rev = root.find('default').get('revision')
+          mapping = {
               "common": "kernel",
               "prebuilts/clang/host/linux-x86": "clang",
               "prebuilts/rust": "rust",
               "prebuilts/clang-tools": "tools"
           }
-
+          
           projects = {}
           for proj in root.findall('project'):
               path = proj.get('path')
-              if path in targets:
+              if path in mapping:
                   name = proj.get('name')
                   rev = proj.get('revision') or default_rev
-                  # 核心：只跟踪 Hash
-                  h = get_static_hash(name, rev)
-                  projects[targets[path]] = {"name": name, "hash": h}
+                  projects[mapping[path]] = {
+                      "name": name,
+                      "hash": get_static_hash(name, rev)
+                  }
 
-          def fetch_text(repo, rev, path=""):
-              url = f"https://android.googlesource.com/{repo}/+/{rev}/{path}?format=TEXT"
-              r = requests.get(url, timeout=15)
-              return base64.b64decode(r.text).decode('utf-8', errors='ignore') if r.status_code == 200 else ""
-
-          # 2. 从哈希中实地解析数据
-          # 内核版本
+          # --- 步骤 2: 从内核源码中读取“真理契约” ---
           k = projects['kernel']
-          mk = fetch_text(k['name'], k['hash'], "Makefile")
-          v = re.search(r'^VERSION\s*=\s*(\d+)', mk, re.M).group(1)
-          p = re.search(r'^PATCHLEVEL\s*=\s*(\d+)', mk, re.M).group(1)
-          s = re.search(r'^SUBLEVEL\s*=\s*(\d+)', mk, re.M).group(1)
-          k_ver = f"{v}.{p}.{s}"
+          # 读取 build.config.constants 
+          constants = fetch_raw_text(k['name'], k['hash'], "build.config.constants")
+          
+          # 提取版本号 (绝对不猜)
+          clang_ver = re.search(r'CLANG_VERSION=([^\s]+)', constants).group(1)
+          rust_ver = re.search(r'RUSTC_VERSION=([^\s]+)', constants).group(1)
+          
+          # 从 Makefile 提取内核版本
+          makefile = fetch_raw_text(k['name'], k['hash'], "Makefile")
+          k_ver = ".".join([re.search(f'^{v}\\s*=\\s*(\\d+)', makefile, re.M).group(1) for v in ["VERSION", "PATCHLEVEL", "SUBLEVEL"]])
 
-          # Clang 版本 (Build ID)
-          c = projects['clang']
-          c_info = fetch_text(c['name'], c['hash'])
-          c_ver = re.search(r'r\d+[a-z]?', c_info).group(0)
-
-          # Rust 版本 (不管版本号，只抓那个哈希下存在的文件夹)
-          r = projects['rust']
-          ls_tree = fetch_text(r['name'], r['hash'], "linux-x86/")
-          # 提取目录下所有 x.y.z 文件夹，选那个哈希点上最新的
-          versions = sorted(re.findall(r'(\d+\.\d+\.\d+)', ls_tree), key=lambda x: [int(i) for i in x.split('.')])
-          rust_ver = versions[-1] if versions else "unknown"
-
-          # 3. 构造 100% 锁死的 JSON
-          data = {
-              "manifest_tag": "${{ inputs.manifest_branch }}",
+          # --- 步骤 3: 组装物理链接 ---
+          # 只有 clang-tools 不需要版本号变量，它是哈希驱动的扁平结构
+          t = projects['tools']
+          
+          final_json = {
+              "manifest_tag": tag,
               "kernel_version": k_ver,
-              "clang_version": c_ver,
-              "rust_version": rust_ver,
-              "kernel": { 
-                  "revision": k['hash'], 
-                  "url": f"https://android.googlesource.com/{k['name']}/+archive/{k['hash']}.tar.gz" 
+              "build_constants": {
+                  "clang_version": clang_ver,
+                  "rust_version": rust_ver
               },
-              "clang": { 
-                  "revision": c['hash'], 
-                  "url": f"https://android.googlesource.com/{c['name']}/+archive/{c['hash']}.tar.gz" 
+              "kernel": {
+                  "revision": k['hash'],
+                  "url": f"https://android.googlesource.com/{k['name']}/+archive/{k['hash']}.tar.gz"
               },
-              "rust": { 
-                  "revision": r['hash'], 
-                  "url": f"https://android.googlesource.com/{r['name']}/+archive/{r['hash']}/linux-x86/{rust_ver}.tar.gz" 
+              "clang": {
+                  "revision": projects['clang']['hash'],
+                  "url": f"https://android.googlesource.com/{projects['clang']['name']}/+archive/{projects['clang']['hash']}/clang-{clang_ver}.tar.gz"
               },
-              "clang_tools": { 
-                  "revision": projects['tools']['hash'], 
-                  "url": f"https://android.googlesource.com/{projects['tools']['name']}/+archive/{projects['tools']['hash']}/linux-x86/bin.tar.gz" 
+              "rust": {
+                  "revision": projects['rust']['hash'],
+                  "url": f"https://android.googlesource.com/{projects['rust']['name']}/+archive/{projects['rust']['hash']}/linux-x86/{rust_ver}.tar.gz"
+              },
+              "clang_tools": {
+                  "revision": t['hash'],
+                  "url": f"https://android.googlesource.com/{t['name']}/+archive/{t['hash']}/linux-x86/bin.tar.gz"
               }
           }
 
           with open('toolchains.json', 'w') as f:
-              json.dump(data, f, indent=2)
+              json.dump(final_json, f, indent=2)
 
-      - name: Commit and Push to Root
+      - name: Commit and Push
         run: |
-          git config --local user.email "bot@github.com"
-          git config --local user.name "VersionTracker"
+          git config --local user.email "github-actions[bot]@users.noreply.github.com"
+          git config --local user.name "github-actions[bot]"
           git add toolchains.json
           if git diff --staged --quiet; then
-            echo "No changes"
+            echo "No changes detected"
           else
-            git commit -m "Sync toolchains to static hash: ${{ inputs.manifest_branch }}"
+            git commit -m "Sync toolchains: ${{ inputs.manifest_branch }} (Verified Constants)"
             git push
           fi
