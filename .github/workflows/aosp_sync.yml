@@ -1,4 +1,4 @@
-name: AOSP Toolchain Sync (Perl Power Mode)
+name: AOSP Toolchain Sync (Perl Mode)
 
 on:
   workflow_dispatch:
@@ -16,7 +16,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v4
 
       - name: Resolve and Extraction
         shell: bash
@@ -24,23 +24,22 @@ jobs:
           TAG="${{ github.event.inputs.manifest_tag }}"
           BASE="https://android.googlesource.com"
 
-          # 1. 物理定位函数 (Base64 解码并移除 \r 防止干扰)
+          # 1. 物理抓取：直接还原原始文本流，强制干掉回车符
           fetch_raw() {
             curl -s "$BASE/$1/+/$2/$3?format=TEXT" | base64 -d | tr -d '\r'
           }
 
-          # 锁定 Manifest
+          # 锁定 Manifest 下的物理哈希
           M_RAW=$(fetch_raw "kernel/manifest" "refs/heads/$TAG" "default.xml")
           COMMON_HASH=$(echo "$M_RAW" | grep 'path="common"' | perl -ne 'print $1 if /revision="([^"]+)"/')
           [ -z "$COMMON_HASH" ] && COMMON_HASH="android16-6.12"
 
-          # 2. 抓取物理文件
+          # 2. 现场采样：获取那两个决定命运的文件
           fetch_raw "kernel/common" "$COMMON_HASH" "Makefile" > Makefile
           fetch_raw "kernel/common" "$COMMON_HASH" "build.config.constants" > constants
 
-          # 3. 【核心】Perl 暴力提取：哪怕带了点号、补丁号、注释，也全部精准带走
+          # 3. Perl 暴力提取：[^'\"#\s]+ 意味着“只要不是引号、注释、空格，全部带走”
           get_val() {
-            # 逻辑：匹配行首 KEY，跳过等号和空白，抓取非空白、非引号、非井号的部分
             perl -ne "print \$1 if /^\s*$1\s*=\s*['\"]?([^'\"#\s]+)/" "$2"
           }
 
@@ -53,12 +52,12 @@ jobs:
           S=$(get_val "SUBLEVEL" "Makefile")
           KERNEL_V="${V}.${P}.${S}"
 
-          # 4. 获取 Artifact 哈希
+          # 获取仓库哈希（用于构造 URL）
           get_repo_hash() {
              git ls-remote "$BASE/$1" "refs/heads/main" | awk '{print $1}'
           }
 
-          # 构造最终 JSON
+          # 4. 物理对齐构造 JSON
           cat <<EOF > toolchains.json
           {
             "manifest_tag": "$TAG",
@@ -78,9 +77,12 @@ jobs:
 
       - name: Commit and Push
         run: |
-          # 物理检查：如果 JSON 里没有后缀，直接在日志里报警
+          # 最终检查：如果生成的 JSON 还是丢了后缀，直接让 Workflow 炸掉
           RUST_V=$(jq -r '.kernel_info.rust_version' toolchains.json)
-          echo "Checked Rust Version: $RUST_V"
+          if [[ "$RUST_V" != *"p1"* ]]; then
+            echo "FAILED: Rust version $RUST_V is incomplete!"
+            exit 1
+          fi
           git config --local user.email "action@github.com"
           git config --local user.name "GitHub Action"
           git add toolchains.json
