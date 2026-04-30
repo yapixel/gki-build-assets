@@ -3,8 +3,8 @@ name: Parse Manifest
 on:
   workflow_dispatch:
     inputs:
-      kernel_revision:
-        description: 'Kernel revision'
+      kernel_version:
+        description: 'Kernel version tag (e.g. android16-6.12-2025-06)'
         required: true
         type: string
         default: 'android16-6.12-2025-06'
@@ -19,8 +19,7 @@ jobs:
       - name: Download and parse Manifest
         id: manifest
         run: |
-          KERNEL_REV="${{ inputs.kernel_revision }}"
-          MANIFEST_URL="https://android.googlesource.com/kernel/manifest/+/refs/heads/${KERNEL_REV}/default.xml?format=TEXT"
+          MANIFEST_URL="https://android.googlesource.com/kernel/manifest/+/refs/heads/common-android16-6.12/default.xml?format=TEXT"
           
           echo "Downloading manifest from: $MANIFEST_URL"
           curl -fsL --retry 5 "$MANIFEST_URL" | base64 -d > manifest.xml
@@ -30,7 +29,8 @@ jobs:
             exit 1
           fi
           
-          # 提取内核 revision
+          # 提取所有 project 中 kernel/common 的 revision
+          # 注意：这里会得到类似 android16-6.12-2025-06 的值
           KERNEL_REVISION=$(xmlstarlet sel -t -v "//project[@path='common']/@revision" manifest.xml)
           echo "kernel_revision=${KERNEL_REVISION}" >> $GITHUB_OUTPUT
           
@@ -57,6 +57,9 @@ jobs:
           [ -z "$TOOLS_REV" ] && TOOLS_REV="$DEFAULT_REV"
           echo "tools_name=${TOOLS_NAME}" >> $GITHUB_OUTPUT
           echo "tools_rev=${TOOLS_REV}" >> $GITHUB_OUTPUT
+          
+          # 用户输入的内核版本 tag
+          echo "input_kernel_tag=${{ inputs.kernel_version }}" >> $GITHUB_OUTPUT
 
       - name: Convert branches to commit hashes
         id: hashes
@@ -94,7 +97,8 @@ jobs:
             "kernel_url": "${KERNEL_URL}",
             "clang_url": "${CLANG_URL}",
             "rust_url": "${RUST_URL}",
-            "clang_tools_url": "${TOOLS_URL}"
+            "clang_tools_url": "${TOOLS_URL}",
+            "kernel_tag": "${{ steps.manifest.outputs.input_kernel_tag }}"
           }
           EOF
           
