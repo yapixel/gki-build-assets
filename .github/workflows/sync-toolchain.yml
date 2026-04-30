@@ -1,0 +1,94 @@
+name: Sync Toolchains to gki-build-assets
+
+on:
+  workflow_dispatch:
+    inputs:
+      force_resync:
+        description: 'Force re-download and upload (skip existence check)'
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: write
+
+jobs:
+  sync:
+    name: Sync Toolchains
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout popsicle_ksu_workflow (for toolchains.json)
+        uses: actions/checkout@v6
+        with:
+          repository: yapixel/popsicle_ksu_workflow
+          path: popsicle_config
+          ref: google
+
+      - name: Read toolchains.json
+        id: read_json
+        run: |
+          echo "TOOLCHAINS=$(cat popsicle_config/config/toolchains.json | jq -c .)" >> $GITHUB_ENV
+
+      - name: Sync each toolchain version
+        run: |
+          echo "$TOOLCHAINS" | jq -r 'keys[]' | while read REVISION; do
+            echo "Processing revision: $REVISION"
+            
+            # Check if release already exists
+            if [[ "${{ inputs.force_resync }}" == "false" ]]; then
+              if gh release view "$REVISION" -R yapixel/gki-build-assets &>/dev/null; then
+                echo "Release $REVISION already exists, skipping"
+                continue
+              fi
+            fi
+            
+            # Get URLs from JSON
+            CLANG_URL=$(echo "$TOOLCHAINS" | jq -r ".[\"$REVISION\"].clang.url")
+            RUST_URL=$(echo "$TOOLCHAINS" | jq -r ".[\"$REVISION\"].rust.url")
+            TOOLS_URL=$(echo "$TOOLCHAINS" | jq -r ".[\"$REVISION\"].clang_tools.url")
+            
+            # Download components
+            mkdir -p "$REVISION"
+            cd "$REVISION"
+            
+            echo "Downloading clang..."
+            aria2c -s16 -x16 -k1M "$CLANG_URL" -o clang.tar.gz
+            if [ $(stat -c%s clang.tar.gz) -lt 1000000 ]; then
+              echo "Error: clang.tar.gz size too small"
+              exit 1
+            fi
+            
+            echo "Downloading rust..."
+            aria2c -s16 -x16 -k1M "$RUST_URL" -o rust.tar.gz
+            if [ $(stat -c%s rust.tar.gz) -lt 1000000 ]; then
+              echo "Error: rust.tar.gz size too small"
+              exit 1
+            fi
+            
+            echo "Downloading clang-tools..."
+            aria2c -s16 -x16 -k1M "$TOOLS_URL" -o clang-tools.tar.gz
+            if [ $(stat -c%s clang-tools.tar.gz) -lt 1000000 ]; then
+              echo "Error: clang-tools.tar.gz size too small"
+              exit 1
+            fi
+            
+            cd ..
+            
+            # Create release and upload
+            echo "Creating release $REVISION..."
+            gh release create "$REVISION" \
+              --repo yapixel/gki-build-assets \
+              --title "$REVISION" \
+              --notes "Toolchain components for $REVISION (Clang + Rust + clang-tools)"
+            
+            echo "Uploading assets..."
+            gh release upload "$REVISION" \
+              "$REVISION"/clang.tar.gz \
+              "$REVISION"/rust.tar.gz \
+              "$REVISION"/clang-tools.tar.gz \
+              --repo yapixel/gki-build-assets \
+              --clobber
+            
+            # Clean up
+            rm -rf "$REVISION"
+          done
