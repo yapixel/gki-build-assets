@@ -1,180 +1,108 @@
-name: Download and Release
+name: Parse Manifest
 
 on:
   workflow_dispatch:
-
-permissions:
-  contents: write
+    inputs:
+      kernel_revision:
+        description: 'Kernel revision'
+        required: true
+        type: string
+        default: 'android16-6.12-2025-06'
 
 jobs:
-  download:
+  parse:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
       - name: Install dependencies
-        run: sudo apt-get update && sudo apt-get install -y aria2
+        run: sudo apt-get update && sudo apt-get install -y xmlstarlet
 
-      - name: Download raw toolchains artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: raw-toolchains
-          run-id: ${{ github.run_id }}
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Read raw toolchains
-        id: raw
+      - name: Download and parse Manifest
+        id: manifest
         run: |
-          KERNEL_REV=$(jq -r '.kernel_revision' raw-toolchains.json)
-          KERNEL_URL=$(jq -r '.kernel_url' raw-toolchains.json)
-          CLANG_URL=$(jq -r '.clang_url' raw-toolchains.json)
-          RUST_URL=$(jq -r '.rust_url' raw-toolchains.json)
-          TOOLS_URL=$(jq -r '.clang_tools_url' raw-toolchains.json)
+          KERNEL_REV="${{ inputs.kernel_revision }}"
+          MANIFEST_URL="https://android.googlesource.com/kernel/manifest/+/refs/heads/${KERNEL_REV}/default.xml?format=TEXT"
           
-          echo "kernel_rev=${KERNEL_REV}" >> $GITHUB_OUTPUT
-          echo "kernel_url=${KERNEL_URL}" >> $GITHUB_OUTPUT
-          echo "clang_url=${CLANG_URL}" >> $GITHUB_OUTPUT
-          echo "rust_url=${RUST_URL}" >> $GITHUB_OUTPUT
-          echo "tools_url=${TOOLS_URL}" >> $GITHUB_OUTPUT
-
-      - name: Download kernel source
-        run: |
-          echo "Downloading kernel from: ${{ steps.raw.outputs.kernel_url }}"
-          aria2c -s16 -x16 -k1M "${{ steps.raw.outputs.kernel_url }}" -o kernel.tar.gz
-          if [ ! -s kernel.tar.gz ]; then
-            echo "Error: Failed to download kernel"
-            exit 1
-          fi
-
-      - name: Download clang
-        run: |
-          echo "Downloading clang from: ${{ steps.raw.outputs.clang_url }}"
-          aria2c -s16 -x16 -k1M "${{ steps.raw.outputs.clang_url }}" -o clang.tar.gz
-          if [ ! -s clang.tar.gz ]; then
-            echo "Error: Failed to download clang"
-            exit 1
-          fi
-
-      - name: Download rust
-        run: |
-          echo "Downloading rust from: ${{ steps.raw.outputs.rust_url }}"
-          aria2c -s16 -x16 -k1M "${{ steps.raw.outputs.rust_url }}" -o rust.tar.gz
-          if [ ! -s rust.tar.gz ]; then
-            echo "Error: Failed to download rust"
-            exit 1
-          fi
-
-      - name: Download clang-tools
-        run: |
-          echo "Downloading clang-tools from: ${{ steps.raw.outputs.tools_url }}"
-          aria2c -s16 -x16 -k1M "${{ steps.raw.outputs.tools_url }}" -o clang-tools.tar.gz
-          if [ ! -s clang-tools.tar.gz ]; then
-            echo "Error: Failed to download clang-tools"
-            exit 1
-          fi
-
-      - name: Extract clang version
-        id: clang_version
-        run: |
-          mkdir -p /tmp/clang_extract
-          tar -xzf clang.tar.gz -C /tmp/clang_extract --wildcards '*/bin/clang' --strip-components=2 2>/dev/null
-          chmod +x /tmp/clang_extract/clang
+          echo "Downloading manifest from: $MANIFEST_URL"
+          curl -fsL --retry 5 "$MANIFEST_URL" | base64 -d > manifest.xml
           
-          CLANG_VER=$(/tmp/clang_extract/clang --version 2>/dev/null | grep -oP 'based on \Kr[0-9]+' | head -1)
-          
-          if [ -z "$CLANG_VER" ]; then
-            echo "Error: Failed to extract clang version"
+          if ! head -1 manifest.xml | grep -q "<?xml"; then
+            echo "Error: Invalid manifest downloaded"
             exit 1
           fi
           
-          echo "clang_version=${CLANG_VER}" >> $GITHUB_OUTPUT
-          echo "Clang version: ${CLANG_VER}"
+          # 提取内核 revision
+          KERNEL_REVISION=$(xmlstarlet sel -t -v "//project[@path='common']/@revision" manifest.xml)
+          echo "kernel_revision=${KERNEL_REVISION}" >> $GITHUB_OUTPUT
           
-          rm -rf /tmp/clang_extract
+          # 获取 default revision
+          DEFAULT_REV=$(xmlstarlet sel -t -v "//default/@revision" manifest.xml)
+          
+          # 获取 clang 仓库信息
+          CLANG_NAME=$(xmlstarlet sel -t -v "//project[@path='prebuilts/clang/host/linux-x86']/@name" manifest.xml)
+          CLANG_REV=$(xmlstarlet sel -t -v "//project[@path='prebuilts/clang/host/linux-x86']/@revision" manifest.xml)
+          [ -z "$CLANG_REV" ] && CLANG_REV="$DEFAULT_REV"
+          echo "clang_name=${CLANG_NAME}" >> $GITHUB_OUTPUT
+          echo "clang_rev=${CLANG_REV}" >> $GITHUB_OUTPUT
+          
+          # 获取 rust 仓库信息
+          RUST_NAME=$(xmlstarlet sel -t -v "//project[@path='prebuilts/rust']/@name" manifest.xml)
+          RUST_REV=$(xmlstarlet sel -t -v "//project[@path='prebuilts/rust']/@revision" manifest.xml)
+          [ -z "$RUST_REV" ] && RUST_REV="$DEFAULT_REV"
+          echo "rust_name=${RUST_NAME}" >> $GITHUB_OUTPUT
+          echo "rust_rev=${RUST_REV}" >> $GITHUB_OUTPUT
+          
+          # 获取 clang-tools 仓库信息
+          TOOLS_NAME=$(xmlstarlet sel -t -v "//project[@path='prebuilts/clang-tools']/@name" manifest.xml)
+          TOOLS_REV=$(xmlstarlet sel -t -v "//project[@path='prebuilts/clang-tools']/@revision" manifest.xml)
+          [ -z "$TOOLS_REV" ] && TOOLS_REV="$DEFAULT_REV"
+          echo "tools_name=${TOOLS_NAME}" >> $GITHUB_OUTPUT
+          echo "tools_rev=${TOOLS_REV}" >> $GITHUB_OUTPUT
 
-      - name: Create toolchain release
+      - name: Convert branches to commit hashes
+        id: hashes
         run: |
-          TOOLCHAIN_TAG="${{ steps.clang_version.outputs.clang_version }}"
+          get_hash() {
+            local repo=$1
+            local rev=$2
+            if [[ "$rev" =~ ^[0-9a-f]{40}$ ]]; then
+              echo "$rev"
+            else
+              git ls-remote "https://android.googlesource.com/${repo}" "$rev" | cut -f1 | head -1
+            fi
+          }
           
-          if gh release view "$TOOLCHAIN_TAG" -R yapixel/gki-build-assets &>/dev/null; then
-            echo "Release $TOOLCHAIN_TAG already exists, deleting..."
-            gh release delete "$TOOLCHAIN_TAG" -R yapixel/gki-build-assets --yes
-          fi
+          CLANG_HASH=$(get_hash "${{ steps.manifest.outputs.clang_name }}" "${{ steps.manifest.outputs.clang_rev }}")
+          RUST_HASH=$(get_hash "${{ steps.manifest.outputs.rust_name }}" "${{ steps.manifest.outputs.rust_rev }}")
+          TOOLS_HASH=$(get_hash "${{ steps.manifest.outputs.tools_name }}" "${{ steps.manifest.outputs.tools_rev }}")
           
-          echo "Creating toolchain release: $TOOLCHAIN_TAG"
-          gh release create "$TOOLCHAIN_TAG" \
-            --repo yapixel/gki-build-assets \
-            --title "$TOOLCHAIN_TAG" \
-            --notes "Clang toolchain for $TOOLCHAIN_TAG"
-          
-          echo "Uploading clang.tar.gz..."
-          gh release upload "$TOOLCHAIN_TAG" \
-            clang.tar.gz \
-            --repo yapixel/gki-build-assets \
-            --clobber
-          
-          echo "Uploading rust.tar.gz..."
-          gh release upload "$TOOLCHAIN_TAG" \
-            rust.tar.gz \
-            --repo yapixel/gki-build-assets \
-            --clobber
-          
-          echo "Uploading clang-tools.tar.gz..."
-          gh release upload "$TOOLCHAIN_TAG" \
-            clang-tools.tar.gz \
-            --repo yapixel/gki-build-assets \
-            --clobber
-          
-          echo "toolchain_tag=${TOOLCHAIN_TAG}" >> $GITHUB_OUTPUT
+          echo "clang_hash=${CLANG_HASH}" >> $GITHUB_OUTPUT
+          echo "rust_hash=${RUST_HASH}" >> $GITHUB_OUTPUT
+          echo "tools_hash=${TOOLS_HASH}" >> $GITHUB_OUTPUT
 
-      - name: Generate final toolchains.json
+      - name: Generate raw toolchains.json
         run: |
-          KERNEL_TAG="${{ steps.raw.outputs.kernel_rev }}"
-          TOOLCHAIN_TAG="${{ steps.clang_version.outputs.clang_version }}"
-          BASE_URL="https://github.com/yapixel/gki-build-assets/releases/download"
+          KERNEL_REV="${{ steps.manifest.outputs.kernel_revision }}"
+          KERNEL_URL="https://android.googlesource.com/kernel/common/+archive/${KERNEL_REV}.tar.gz"
           
-          cat > toolchains.json << EOF
+          CLANG_URL="https://android.googlesource.com/${{ steps.manifest.outputs.clang_name }}/+archive/${{ steps.hashes.outputs.clang_hash }}.tar.gz"
+          RUST_URL="https://android.googlesource.com/${{ steps.manifest.outputs.rust_name }}/+archive/${{ steps.hashes.outputs.rust_hash }}.tar.gz"
+          TOOLS_URL="https://android.googlesource.com/${{ steps.manifest.outputs.tools_name }}/+archive/${{ steps.hashes.outputs.tools_hash }}/linux-x86/bin.tar.gz"
+          
+          cat > raw-toolchains.json << EOF
           {
-            "kernel": "${BASE_URL}/${KERNEL_TAG}/kernel.tar.gz",
-            "clang": "${BASE_URL}/${TOOLCHAIN_TAG}/clang.tar.gz",
-            "rust": "${BASE_URL}/${TOOLCHAIN_TAG}/rust.tar.gz",
-            "clang_tools": "${BASE_URL}/${TOOLCHAIN_TAG}/clang-tools.tar.gz"
+            "kernel_revision": "${KERNEL_REV}",
+            "kernel_url": "${KERNEL_URL}",
+            "clang_url": "${CLANG_URL}",
+            "rust_url": "${RUST_URL}",
+            "clang_tools_url": "${TOOLS_URL}"
           }
           EOF
           
-          echo "Generated toolchains.json:"
-          cat toolchains.json
+          echo "Generated raw-toolchains.json:"
+          cat raw-toolchains.json
 
-      - name: Create kernel release
-        run: |
-          KERNEL_TAG="${{ steps.raw.outputs.kernel_rev }}"
-          
-          if gh release view "$KERNEL_TAG" -R yapixel/gki-build-assets &>/dev/null; then
-            echo "Release $KERNEL_TAG already exists, deleting..."
-            gh release delete "$KERNEL_TAG" -R yapixel/gki-build-assets --yes
-          fi
-          
-          echo "Creating kernel release: $KERNEL_TAG"
-          gh release create "$KERNEL_TAG" \
-            --repo yapixel/gki-build-assets \
-            --title "$KERNEL_TAG" \
-            --notes "Kernel source for $KERNEL_TAG"
-          
-          echo "Uploading kernel.tar.gz..."
-          gh release upload "$KERNEL_TAG" \
-            kernel.tar.gz \
-            --repo yapixel/gki-build-assets \
-            --clobber
-          
-          echo "Uploading toolchains.json..."
-          gh release upload "$KERNEL_TAG" \
-            toolchains.json \
-            --repo yapixel/gki-build-assets \
-            --clobber
-
-      - name: Cleanup
-        if: always()
-        run: |
-          rm -f kernel.tar.gz clang.tar.gz rust.tar.gz clang-tools.tar.gz raw-toolchains.json toolchains.json
-          rm -rf /tmp/clang_extract
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: raw-toolchains
+          path: raw-toolchains.json
