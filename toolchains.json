@@ -7,9 +7,21 @@
     "rust_version": "1.82.0"
   },
   "artifacts": {
-    "kernel": { "revision": "android16-6.12-2025-06", "url": "https://android.googlesource.com/kernel/common/+archive/android16-6.12-2025-06.tar.gz" },
-    "clang": { "revision": "", "url": "https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive//clang-r536225.tar.gz" },
-    "rust": { "revision": "", "url": "https://android.googlesource.com/platform/prebuilts/rust/+archive//linux-x86/1.82.0.tar.gz" },
-    "clang_tools": { "revision": "", "url": "https://android.googlesource.com/platform/prebuilts/clang-tools/+archive//linux-x86/bin.tar.gz" }
+    "kernel": {
+      "revision": "android16-6.12-2025-06",
+      "url": "https://android.googlesource.com/kernel/common/+archive/android16-6.12-2025-06.tar.gz"
+    },
+    "clang": {
+      "revision": "main-kernel-2025",
+      "url": "https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/main-kernel-2025/clang-r536225.tar.gz"
+    },
+    "rust": {
+      "revision": "main-kernel-2025",
+      "url": "https://android.googlesource.com/platform/prebuilts/rust/+archive/main-kernel-2025/linux-x86/1.82.0.tar.gz"
+    },
+    "clang_tools": {
+      "revision": "main-kernel-2025",
+      "url": "https://android.googlesource.com/platform/prebuilts/clang-tools/+archive/main-kernel-2025/linux-x86/bin.tar.gz"
+    }
   }
 }
