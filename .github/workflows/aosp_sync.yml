@@ -50,8 +50,8 @@ jobs:
               if re.fullmatch(r'[0-9a-f]{40}', commit):
                   url = f"{base_url}/{repo}/+/{commit}/{path}?format=TEXT"
               else:
-                  # 尝试作为 tag 获取
-                  url = f"{base_url}/{repo}/+/refs/tags/{commit}/{path}?format=TEXT"
+                  # 分支或 tag 直接使用 refs/heads
+                  url = f"{base_url}/{repo}/+/refs/heads/{commit}/{path}?format=TEXT"
                   
               try:
                   r = requests.get(url, timeout=30)
@@ -60,7 +60,7 @@ jobs:
                   text = r.text.strip()
                   if not text:
                       return ""
-                  # 简单校验是否为 base64 格式 (XML 或脚本通常以 PD94bWwg 或 IyEg 开头)
+                  # 校验是否为 base64 格式
                   if not (text.startswith('PD94bWwg') or text.startswith('IyEg')):
                       return ""
                   return base64.b64decode(text).decode('utf-8', errors='ignore')
@@ -69,7 +69,7 @@ jobs:
                   return ""
 
           # 1. 获取 manifest
-          m_raw = fetch_raw("kernel/manifest", f"refs/heads/{tag}", "default.xml")
+          m_raw = fetch_raw("kernel/manifest", tag, "default.xml")
           if not m_raw:
               print(f"CRITICAL: Manifest for {tag} not found.")
               sys.exit(1)
@@ -153,6 +153,7 @@ jobs:
           with open('toolchains.json', 'w') as f:
               json.dump(result, f, indent=2)
           print("Generated toolchains.json successfully.")
+          print(json.dumps(result, indent=2))
 
       - name: Commit and Push
         env:
