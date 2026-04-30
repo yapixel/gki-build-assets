@@ -1,4 +1,4 @@
-name: AOSP Toolchain Sync (Fixed Logic)
+name: AOSP Toolchain Sync (Final Logic)
 
 on:
   workflow_dispatch:
@@ -18,7 +18,15 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v6
 
-      - name: Resolve Environment
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.10'
+
+      - name: Install Dependencies
+        run: pip install requests
+
+      - name: Resolve and Generate
         shell: python
         run: |
           import xml.etree.ElementTree as ET
@@ -32,77 +40,76 @@ jobs:
 
           def fetch_raw(repo, commit, path):
               url = f"{base_url}/{repo}/+/{commit}/{path}?format=TEXT"
-              r = requests.get(url)
-              if r.status_code == 200:
-                  return base64.b64decode(r.text).decode('utf-8', errors='ignore')
+              try:
+                  r = requests.get(url, timeout=15)
+                  if r.status_code == 200:
+                      return base64.b64decode(r.text).decode('utf-8', errors='ignore')
+              except Exception:
+                  pass
               return ""
 
-          # 1. 物理对齐：使用 XML 解析器，拒绝用正则抓哈希
-          manifest_xml = fetch_raw("kernel/manifest", f"refs/heads/{tag}", "default.xml")
-          if not manifest_xml: sys.exit("Manifest not found")
+          # 1. 物理解析 Manifest (这是底线，绝不改用正则)
+          m_raw = fetch_raw("kernel/manifest", f"refs/heads/{tag}", "default.xml")
+          if not m_raw:
+              sys.exit(f"CRITICAL: Manifest for {tag} is missing from Google servers.")
           
-          root = ET.fromstring(manifest_xml)
-          default_rev = root.find('default').get('revision')
+          root = ET.fromstring(m_raw)
+          def_rev = root.find('default').get('revision') if root.find('default') is not None else ""
 
-          # 建立 path -> {repo, revision} 的映射
-          projects = {}
+          project_map = {}
           for p in root.findall('project'):
-              projects[p.get('path')] = {
-                  "repo": p.get('name'),
-                  "rev": p.get('revision') or default_rev
-              }
+              path = p.get('path')
+              if path:
+                  project_map[path] = {
+                      "repo": p.get('name'),
+                      "rev": p.get('revision') or def_rev
+                  }
 
-          # 2. 目标路径列表
-          targets = ["common", "prebuilts/clang/host/linux-x86", "prebuilts/rust", "prebuilts/clang-tools"]
-          
-          # 3. 提取函数：不加戏，只认等号右边的内容
-          def get_raw_val(text, key):
+          # 2. 提取器：物理切割，拒绝截断
+          def extract_val(text, key):
               for line in text.splitlines():
-                  clean_line = line.strip()
-                  if clean_line.startswith(f"{key}=") or clean_line.startswith(f"{key} ="):
-                      # 拿到等号后的所有字符，去掉引号和注释
-                      val = clean_line.split('=', 1)[1].split('#')[0].strip()
-                      return val.strip('"').strip("'")
+                  line = line.strip()
+                  if line.startswith(f"{key}=") or line.startswith(f"{key} ="):
+                      val = line.split('=', 1)[1].split('#')[0].strip()
+                      return val.replace('"', '').replace("'", "")
               return "UNKNOWN"
 
-          common_info = projects.get("common")
-          mk_text = fetch_raw(common_info['repo'], common_info['rev'], "Makefile")
-          const_text = fetch_raw(common_info['repo'], common_info['rev'], "build.config.constants")
-
-          rust_v = get_raw_val(const_text, "RUSTC_VERSION")
-          clang_v = get_raw_val(const_text, "CLANG_VERSION")
+          common = project_map.get("common")
+          if not common: sys.exit("CRITICAL: 'common' path missing in manifest.")
           
-          v = get_raw_val(mk_text, "VERSION")
-          p = get_raw_val(mk_text, "PATCHLEVEL")
-          s = get_raw_val(mk_text, "SUBLEVEL")
+          mk_text = fetch_raw(common['repo'], common['rev'], "Makefile")
+          const_text = fetch_raw(common['repo'], common['rev'], "build.config.constants")
 
-          # 4. 构造 artifacts (解决之前 revision 丢失的问题)
-          def build_art(path, suffix=""):
-              p_info = projects.get(path)
-              if not p_info: return {"revision": "NOT_FOUND", "url": ""}
-              repo = p_info['repo']
-              rev = p_info['rev']
-              url = f"{base_url}/{repo}/+archive/{rev}{suffix}.tar.gz"
-              return {"revision": rev, "url": url}
+          rust_v = extract_val(const_text, "RUSTC_VERSION")
+          clang_v = extract_val(const_text, "CLANG_VERSION")
 
-          res = {
+          # 3. 构造 Artifacts (基于解析出的哈希)
+          def get_art(path, sub_path=""):
+              item = project_map.get(path)
+              if not item: return {"revision": "NOT_FOUND", "url": "NOT_FOUND"}
+              return {
+                  "revision": item['rev'],
+                  "url": f"{base_url}/{item['repo']}/+archive/{item['rev']}{sub_path}.tar.gz"
+              }
+
+          result = {
               "manifest_tag": tag,
               "kernel_info": {
-                  "official_branch": get_raw_val(const_text, "BRANCH"),
-                  "real_version": f"{v}.{p}.{s}".replace("UNKNOWN", "0"),
+                  "official_branch": extract_val(const_text, "BRANCH"),
+                  "real_version": f"{extract_val(mk_text, 'VERSION')}.{extract_val(mk_text, 'PATCHLEVEL')}.{extract_val(mk_text, 'SUBLEVEL')}".replace("UNKNOWN", "0"),
                   "clang_version": clang_v,
                   "rust_version": rust_v
               },
               "artifacts": {
-                  "kernel": build_art("common"),
-                  "clang": build_art("prebuilts/clang/host/linux-x86", f"/clang-{clang_v}"),
-                  "rust": build_art("prebuilts/rust", f"/linux-x86/{rust_v}"),
-                  "clang_tools": build_art("prebuilts/clang-tools", "/linux-x86/bin")
+                  "kernel": get_art("common"),
+                  "clang": get_art("prebuilts/clang/host/linux-x86", f"/clang-{clang_v}"),
+                  "rust": get_art("prebuilts/rust", f"/linux-x86/{rust_v}"),
+                  "clang_tools": get_art("prebuilts/clang-tools", "/linux-x86/bin")
               }
           }
 
           with open('toolchains.json', 'w') as f:
-              json.dump(res, f, indent=2)
+              json.dump(result, f, indent=2)
 
       - name: Commit and Push
         run: |
