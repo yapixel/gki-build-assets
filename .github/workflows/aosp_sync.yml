@@ -46,44 +46,55 @@ jobs:
               if not commit or not path:
                   return ""
               
+              print(f"DEBUG: fetch_raw called with repo={repo}, commit={commit}, path={path}")
+              
               # 判断是否为完整的 40 位 commit hash
               if re.fullmatch(r'[0-9a-f]{40}', commit):
                   url = f"{base_url}/{repo}/+/{commit}/{path}?format=TEXT"
+                  print(f"DEBUG: hash mode url={url}")
                   try:
                       r = requests.get(url, timeout=30)
+                      print(f"DEBUG: status={r.status_code}")
                       if r.status_code == 200:
                           text = r.text.strip()
+                          print(f"DEBUG: content preview={text[:100]}")
                           if text and (text.startswith('PD94bWwg') or text.startswith('IyEg')):
                               return base64.b64decode(text).decode('utf-8', errors='ignore')
-                  except:
-                      pass
+                  except Exception as e:
+                      print(f"DEBUG: exception={e}")
                   return ""
               
               # 尝试作为 tag 获取
               url = f"{base_url}/{repo}/+/refs/tags/{commit}/{path}?format=TEXT"
+              print(f"DEBUG: tag mode url={url}")
               try:
                   r = requests.get(url, timeout=30)
+                  print(f"DEBUG: status={r.status_code}")
                   if r.status_code == 200:
                       text = r.text.strip()
+                      print(f"DEBUG: content preview={text[:100]}")
                       if text and (text.startswith('PD94bWwg') or text.startswith('IyEg')):
                           return base64.b64decode(text).decode('utf-8', errors='ignore')
-              except:
-                  pass
+              except Exception as e:
+                  print(f"DEBUG: exception={e}")
               
               # 尝试作为分支获取
               url = f"{base_url}/{repo}/+/refs/heads/{commit}/{path}?format=TEXT"
+              print(f"DEBUG: branch mode url={url}")
               try:
                   r = requests.get(url, timeout=30)
+                  print(f"DEBUG: status={r.status_code}")
                   if r.status_code != 200:
                       return ""
                   text = r.text.strip()
+                  print(f"DEBUG: content preview={text[:100]}")
                   if not text:
                       return ""
                   if not (text.startswith('PD94bWwg') or text.startswith('IyEg')):
                       return ""
                   return base64.b64decode(text).decode('utf-8', errors='ignore')
               except Exception as e:
-                  print(f"Fetch error for {url}: {e}")
+                  print(f"DEBUG: exception={e}")
                   return ""
 
           # 1. 获取 manifest
@@ -125,8 +136,13 @@ jobs:
               print("CRITICAL: 'common' project missing.")
               sys.exit(1)
 
+          print(f"DEBUG: common repo={common['repo']}, rev={common['rev']}")
+
           mk_text = fetch_raw(common['repo'], common['rev'], "Makefile")
           const_text = fetch_raw(common['repo'], common['rev'], "build.config.constants")
+
+          print(f"DEBUG: mk_text length={len(mk_text)}")
+          print(f"DEBUG: const_text length={len(const_text)}")
 
           rust_v = get_val(const_text, "RUSTC_VERSION")
           clang_v = get_val(const_text, "CLANG_VERSION")
@@ -136,6 +152,9 @@ jobs:
           patch = get_val(mk_text, "PATCHLEVEL")
           sub = get_val(mk_text, "SUBLEVEL")
           kernel_ver = f"{ver}.{patch}.{sub}" if sub else f"{ver}.{patch}"
+
+          print(f"DEBUG: rust_v={rust_v}, clang_v={clang_v}, branch={branch}")
+          print(f"DEBUG: ver={ver}, patch={patch}, sub={sub}")
 
           # 3. 构造 artifact 下载信息
           def build_art(path, sub_path=""):
