@@ -14,125 +14,44 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Install dependencies
-        run: sudo apt-get update && sudo apt-get install -y aria2
+        run: sudo apt-get update && sudo apt-get install -y aria2 jq
 
       - name: Read toolchains.json
         id: config
         run: |
-          KERNEL_TAG=$(jq -r '.kernel_tag' toolchains.json)
-          KERNEL_URL=$(jq -r '.kernel.url' toolchains.json)
-          CLANG_URL=$(jq -r '.clang.url' toolchains.json)
-          CLANG_VER=$(jq -r '.clang.version' toolchains.json)
-          RUST_URL=$(jq -r '.rust.url' toolchains.json)
-          TOOLS_URL=$(jq -r '.clang_tools.url' toolchains.json)
-          
-          echo "kernel_tag=${KERNEL_TAG}" >> $GITHUB_OUTPUT
-          echo "kernel_url=${KERNEL_URL}" >> $GITHUB_OUTPUT
-          echo "clang_url=${CLANG_URL}" >> $GITHUB_OUTPUT
-          echo "clang_version=${CLANG_VER}" >> $GITHUB_OUTPUT
-          echo "rust_url=${RUST_URL}" >> $GITHUB_OUTPUT
-          echo "tools_url=${TOOLS_URL}" >> $GITHUB_OUTPUT
+          echo "kernel_tag=$(jq -r '.manifest_tag' toolchains.json)" >> $GITHUB_OUTPUT
+          echo "kernel_url=$(jq -r '.toolchains.kernel.url' toolchains.json)" >> $GITHUB_OUTPUT
+          echo "clang_url=$(jq -r '.toolchains.clang.url' toolchains.json)" >> $GITHUB_OUTPUT
+          echo "rust_url=$(jq -r '.toolchains.rust.url' toolchains.json)" >> $GITHUB_OUTPUT
+          echo "tools_url=$(jq -r '.toolchains.clang_tools.url' toolchains.json)" >> $GITHUB_OUTPUT
+          echo "clang_version=$(jq -r '.build_constants.clang_version' toolchains.json)" >> $GITHUB_OUTPUT
 
-      - name: Download kernel source
+      - name: Download and upload clang
         run: |
-          echo "Downloading kernel from: ${{ steps.config.outputs.kernel_url }}"
-          aria2c -s16 -x16 -k1M "${{ steps.config.outputs.kernel_url }}" -o kernel.tar.gz
-          if [ ! -s kernel.tar.gz ]; then
-            echo "Error: Failed to download kernel"
-            exit 1
-          fi
-
-      - name: Download clang
-        run: |
-          echo "Downloading clang from: ${{ steps.config.outputs.clang_url }}"
+          TAG="${{ steps.config.outputs.clang_version }}"
+          gh release create "$TAG" --repo yapixel/gki-build-assets --title "$TAG" --notes "Toolchain" || true
           aria2c -s16 -x16 -k1M "${{ steps.config.outputs.clang_url }}" -o clang.tar.gz
-          if [ ! -s clang.tar.gz ]; then
-            echo "Error: Failed to download clang"
-            exit 1
-          fi
+          gh release upload "$TAG" clang.tar.gz --repo yapixel/gki-build-assets --clobber
+          rm clang.tar.gz
 
-      - name: Download rust
+      - name: Download and upload rust
         run: |
-          echo "Downloading rust from: ${{ steps.config.outputs.rust_url }}"
+          TAG="${{ steps.config.outputs.clang_version }}"
           aria2c -s16 -x16 -k1M "${{ steps.config.outputs.rust_url }}" -o rust.tar.gz
-          if [ ! -s rust.tar.gz ]; then
-            echo "Error: Failed to download rust"
-            exit 1
-          fi
+          gh release upload "$TAG" rust.tar.gz --repo yapixel/gki-build-assets --clobber
+          rm rust.tar.gz
 
-      - name: Download clang-tools
+      - name: Download and upload clang-tools
         run: |
-          echo "Downloading clang-tools from: ${{ steps.config.outputs.tools_url }}"
+          TAG="${{ steps.config.outputs.clang_version }}"
           aria2c -s16 -x16 -k1M "${{ steps.config.outputs.tools_url }}" -o clang-tools.tar.gz
-          if [ ! -s clang-tools.tar.gz ]; then
-            echo "Error: Failed to download clang-tools"
-            exit 1
-          fi
+          gh release upload "$TAG" clang-tools.tar.gz --repo yapixel/gki-build-assets --clobber
+          rm clang-tools.tar.gz
 
-      - name: Create toolchain release
+      - name: Download and upload kernel
         run: |
-          TOOLCHAIN_TAG="${{ steps.config.outputs.clang_version }}"
-          
-          if gh release view "$TOOLCHAIN_TAG" -R yapixel/gki-build-assets &>/dev/null; then
-            echo "Release $TOOLCHAIN_TAG already exists, skipping..."
-          else
-            echo "Creating toolchain release: $TOOLCHAIN_TAG"
-            gh release create "$TOOLCHAIN_TAG" \
-              --repo yapixel/gki-build-assets \
-              --title "$TOOLCHAIN_TAG" \
-              --notes "Clang toolchain for $TOOLCHAIN_TAG"
-          fi
-          
-          echo "Uploading clang.tar.gz..."
-          gh release upload "$TOOLCHAIN_TAG" \
-            clang.tar.gz \
-            --repo yapixel/gki-build-assets \
-            --clobber
-          
-          echo "Uploading rust.tar.gz..."
-          gh release upload "$TOOLCHAIN_TAG" \
-            rust.tar.gz \
-            --repo yapixel/gki-build-assets \
-            --clobber
-          
-          echo "Uploading clang-tools.tar.gz..."
-          gh release upload "$TOOLCHAIN_TAG" \
-            clang-tools.tar.gz \
-            --repo yapixel/gki-build-assets \
-            --clobber
-
-      - name: Create kernel release
-        run: |
-          KERNEL_TAG="${{ steps.config.outputs.kernel_tag }}"
-          
-          if gh release view "$KERNEL_TAG" -R yapixel/gki-build-assets &>/dev/null; then
-            echo "Release $KERNEL_TAG already exists, deleting..."
-            gh release delete "$KERNEL_TAG" -R yapixel/gki-build-assets --yes
-          fi
-          
-          echo "Creating kernel release: $KERNEL_TAG"
-          gh release create "$KERNEL_TAG" \
-            --repo yapixel/gki-build-assets \
-            --title "$KERNEL_TAG" \
-            --notes "Kernel source for $KERNEL_TAG"
-          
-          echo "Uploading kernel.tar.gz..."
-          gh release upload "$KERNEL_TAG" \
-            kernel.tar.gz \
-            --repo yapixel/gki-build-assets \
-            --clobber
-
-      - name: Upload toolchains.json to kernel release
-        run: |
-          KERNEL_TAG="${{ steps.config.outputs.kernel_tag }}"
-          
-          echo "Uploading toolchains.json to kernel release..."
-          gh release upload "$KERNEL_TAG" \
-            toolchains.json \
-            --repo yapixel/gki-build-assets \
-            --clobber
-
-      - name: Cleanup
-        if: always()
-        run: |
-          rm -f kernel.tar.gz clang.tar.gz rust.tar.gz clang-tools.tar.gz
+          TAG="${{ steps.config.outputs.kernel_tag }}"
+          gh release create "$TAG" --repo yapixel/gki-build-assets --title "$TAG" --notes "Kernel source" || true
+          aria2c -s16 -x16 -k1M "${{ steps.config.outputs.kernel_url }}" -o kernel.tar.gz
+          gh release upload "$TAG" kernel.tar.gz --repo yapixel/gki-build-assets --clobber
+          rm kernel.tar.gz
