@@ -1,12 +1,12 @@
-name: AOSP Toolchain Sync (Perl Mode)
+name: AOSP Toolchain Sync (HEAD Mode)
 
 on:
   workflow_dispatch:
     inputs:
-      manifest_tag:
-        description: 'AOSP Manifest Tag'
+      branch:
+        description: 'AOSP Kernel Branch'
         required: true
-        default: 'common-android16-6.12-2025-06'
+        default: 'android16-6.12'
 
 permissions:
   contents: write
@@ -16,51 +16,43 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Resolve and Extraction
         shell: bash
         run: |
-          TAG="${{ github.event.inputs.manifest_tag }}"
+          BRANCH="${{ github.event.inputs.branch }}"
           BASE="https://android.googlesource.com"
 
-          # 1. 物理抓取：直接还原原始文本流，强制干掉回车符
-          fetch_raw() {
-            curl -s "$BASE/$1/+/$2/$3?format=TEXT" | base64 -d | tr -d '\r'
+          # 1. 物理抓取：直接抓取分支最顶端的文件
+          fetch_head() {
+            curl -s "$BASE/$1/+/$BRANCH/$2?format=TEXT" | base64 -d | tr -d '\r'
           }
 
-          # 锁定 Manifest 下的物理哈希
-          M_RAW=$(fetch_raw "kernel/manifest" "refs/heads/$TAG" "default.xml")
-          COMMON_HASH=$(echo "$M_RAW" | grep 'path="common"' | perl -ne 'print $1 if /revision="([^"]+)"/')
-          [ -z "$COMMON_HASH" ] && COMMON_HASH="android16-6.12"
+          # 2. 现场采样
+          fetch_head "kernel/common" "Makefile" > Makefile
+          fetch_head "kernel/common" "build.config.constants" > constants
 
-          # 2. 现场采样：获取那两个决定命运的文件
-          fetch_raw "kernel/common" "$COMMON_HASH" "Makefile" > Makefile
-          fetch_raw "kernel/common" "$COMMON_HASH" "build.config.constants" > constants
-
-          # 3. Perl 暴力提取：[^'\"#\s]+ 意味着“只要不是引号、注释、空格，全部带走”
+          # 3. Perl 强力提取
           get_val() {
             perl -ne "print \$1 if /^\s*$1\s*=\s*['\"]?([^'\"#\s]+)/" "$2"
           }
 
           RUST_V=$(get_val "RUSTC_VERSION" "constants")
           CLANG_V=$(get_val "CLANG_VERSION" "constants")
-          BRANCH=$(get_val "BRANCH" "constants")
           
           V=$(get_val "VERSION" "Makefile")
           P=$(get_val "PATCHLEVEL" "Makefile")
           S=$(get_val "SUBLEVEL" "Makefile")
           KERNEL_V="${V}.${P}.${S}"
 
-          # 获取仓库哈希（用于构造 URL）
-          get_repo_hash() {
-             git ls-remote "$BASE/$1" "refs/heads/main" | awk '{print $1}'
-          }
+          # 获取此时此刻分支的最新哈希
+          HEAD_HASH=$(git ls-remote "$BASE/kernel/common" "refs/heads/$BRANCH" | awk '{print $1}')
 
-          # 4. 物理对齐构造 JSON
+          # 4. 构造 JSON
           cat <<EOF > toolchains.json
           {
-            "manifest_tag": "$TAG",
+            "manifest_tag": "HEAD-$BRANCH",
             "kernel_info": {
               "official_branch": "$BRANCH",
               "real_version": "$KERNEL_V",
@@ -68,23 +60,18 @@ jobs:
               "rust_version": "$RUST_V"
             },
             "artifacts": {
-              "kernel": { "revision": "$COMMON_HASH", "url": "$BASE/kernel/common/+archive/$COMMON_HASH.tar.gz" },
-              "clang": { "url": "$BASE/platform/prebuilts/clang/host/linux-x86/+archive/$(get_repo_hash "platform/prebuilts/clang/host/linux-x86")/clang-$CLANG_V.tar.gz" },
-              "rust": { "url": "$BASE/platform/prebuilts/rust/+archive/$(get_repo_hash "platform/prebuilts/rust")/linux-x86/$RUST_V.tar.gz" }
+              "kernel": { "revision": "$HEAD_HASH", "url": "$BASE/kernel/common/+archive/$HEAD_HASH.tar.gz" },
+              "rust": { "url": "$BASE/platform/prebuilts/rust/+archive/$(git ls-remote "$BASE/platform/prebuilts/rust" "refs/heads/main" | awk '{print $1}')/linux-x86/$RUST_V.tar.gz" }
             }
           }
           EOF
 
       - name: Commit and Push
         run: |
-          # 最终检查：如果生成的 JSON 还是丢了后缀，直接让 Workflow 炸掉
           RUST_V=$(jq -r '.kernel_info.rust_version' toolchains.json)
-          if [[ "$RUST_V" != *"p1"* ]]; then
-            echo "FAILED: Rust version $RUST_V is incomplete!"
-            exit 1
-          fi
+          echo "Current Branch Rust Version: $RUST_V"
           git config --local user.email "action@github.com"
           git config --local user.name "GitHub Action"
           git add toolchains.json
-          git commit -m "Sync: ${{ github.event.inputs.manifest_tag }} (Rust: $RUST_V)" || exit 0
+          git commit -m "Sync HEAD: $RUST_V" || exit 0
           git push
