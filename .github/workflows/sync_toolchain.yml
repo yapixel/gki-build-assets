@@ -1,17 +1,25 @@
-name: Parse Manifest
+name: Parse and Sync Manifest
 
 on:
   workflow_dispatch:
     inputs:
       manifest_branch:
-        description: 'Manifest Branch'
+        description: 'Manifest Branch (e.g. common-android16-6.12-2025-06)'
         required: true
         default: 'common-android16-6.12-2025-06'
 
+permissions:
+  contents: write
+
 jobs:
-  parse:
+  parse-and-commit:
     runs-on: ubuntu-latest
     steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # 获取完整历史以确保 push 成功
+
       - name: Download Manifest
         run: |
           TAG="${{ inputs.manifest_branch }}"
@@ -23,12 +31,13 @@ jobs:
         shell: python
         run: |
           import xml.etree.ElementTree as ET
-          import os, requests, base64, re
+          import os, requests, base64, re, json
 
-          # 1. 解析 XML 基础信息
+          # 1. 解析 XML 基础项目信息
           tree = ET.parse('manifest.xml')
           root = tree.getroot()
-          default_rev = root.find('default').get('revision', '')
+          default_tag = root.find('default')
+          default_rev = default_tag.get('revision', '') if default_tag is not None else ""
 
           projects = {}
           targets = {
@@ -49,70 +58,78 @@ jobs:
           def fetch_text(repo, rev, path=""):
               url = f"https://android.googlesource.com/{repo}/+/{rev}/{path}?format=TEXT"
               try:
-                  r = requests.get(url, timeout=10)
-                  return base64.b64decode(r.text).decode('utf-8')
-              except: return ""
+                  r = requests.get(url, timeout=15)
+                  if r.status_code == 200:
+                      return base64.b64decode(r.text).decode('utf-8', errors='ignore')
+              except: pass
+              return ""
 
           results = {}
 
-          # 2. 准确提取内核版本 (Makefile)
+          # 2. 从源码 Makefile 提取内核小版本 (如 6.12.23)
           k = projects['kernel']
-          mk = fetch_text(k['name'], k['rev'], "Makefile")
-          v = re.search(r'^VERSION\s*=\s*(\d+)', mk, re.M).group(1)
-          p = re.search(r'^PATCHLEVEL\s*=\s*(\d+)', mk, re.M).group(1)
-          s = re.search(r'^SUBLEVEL\s*=\s*(\d+)', mk, re.M).group(1)
+          makefile = fetch_text(k['name'], k['rev'], "Makefile")
+          v = re.search(r'^VERSION\s*=\s*(\d+)', makefile, re.M).group(1)
+          p = re.search(r'^PATCHLEVEL\s*=\s*(\d+)', makefile, re.M).group(1)
+          s = re.search(r'^SUBLEVEL\s*=\s*(\d+)', makefile, re.M).group(1)
           results['kernel_version'] = f"{v}.{p}.{s}"
-          results['kernel_hash'] = k['rev']
 
-          # 3. 准确提取 Clang 版本 (Commit Message)
+          # 3. 从提交信息提取 Clang Build ID (如 r536225)
           c = projects['clang']
-          c_info = fetch_text(c['name'], c['rev']) # 获取提交详情
-          c_ver = re.search(r'r\d+[a-z]?', c_info).group(0)
-          results['clang_version'] = c_ver
-          results['clang_hash'] = c['rev']
+          c_info = fetch_text(c['name'], c['rev'])
+          c_ver_match = re.search(r'r\d+[a-z]?', c_info)
+          results['clang_version'] = c_ver_match.group(0) if c_ver_match else "unknown"
 
-          # 4. 准确提取 Rust 版本 (目录探测)
-          # 关键：我们去那个特定的 Hash 下面看 linux-x86 目录里到底有什么
+          # 4. 远程探测该 Revision 下存在的 Rust 版本文件夹
           r_proj = projects['rust']
+          # 获取 linux-x86 目录列表
           ls_tree = fetch_text(r_proj['name'], r_proj['rev'], "linux-x86/")
-          # 解析 git ls-tree 格式的文本，提取目录名
-          # 格式通常为: 040000 tree <hash>    1.81.0
+          
+          # 解析该历史快照中真实存在的数字版本号目录
           found_versions = re.findall(r'(\d+\.\d+\.\d+)', ls_tree)
-          
-          # 逻辑：如果存在多个，选最大的；如果没有，报错或兜底
           if found_versions:
-              # 排除 stable 等软链接，只取纯数字版本
+              # 选出该哈希下的最高版本 (例如 XML 指向的是旧哈希，则会自动选到 1.81.0)
               real_versions = sorted(found_versions, key=lambda x: [int(i) for i in x.split('.')])
-              rust_ver = real_versions[-1] 
+              rust_ver = real_versions[-1]
           else:
-              rust_ver = "1.81.0" # 极低概率下的兜底
-          
-          results['rust_version'] = rust_ver
-          results['rust_hash'] = r_proj['rev']
-          results['tools_hash'] = projects['tools']['rev']
+              rust_ver = "1.81.0" # 极低概率探测失败的兜底
 
-          # 5. 输出到 GITHUB_OUTPUT 和 JSON
-          with open(os.environ['GITHUB_OUTPUT'], 'a') as f:
-              for key, val in results.items():
-                  f.write(f"{key}={val}\n")
-
-          # 写入 JSON
-          import json
-          data = {
+          # 5. 生成 JSON 结构
+          final_data = {
               "manifest_tag": "${{ inputs.manifest_branch }}",
               "kernel_version": results['kernel_version'],
               "clang_version": results['clang_version'],
-              "rust_version": results['rust_version'],
-              "kernel": { "revision": results['kernel_hash'], "url": f"https://android.googlesource.com/{projects['kernel']['name']}/+archive/{results['kernel_hash']}.tar.gz" },
-              "clang": { "revision": results['clang_hash'], "url": f"https://android.googlesource.com/{projects['clang']['name']}/+archive/{results['clang_hash']}.tar.gz" },
-              "rust": { "revision": results['rust_hash'], "url": f"https://android.googlesource.com/{projects['rust']['name']}/+archive/{results['rust_hash']}/linux-x86/{results['rust_version']}.tar.gz" },
-              "clang_tools": { "revision": results['tools_hash'], "url": f"https://android.googlesource.com/{projects['tools']['name']}/+archive/{results['tools_hash']}/linux-x86/bin.tar.gz" }
+              "rust_version": rust_ver,
+              "kernel": { 
+                  "revision": k['rev'], 
+                  "url": f"https://android.googlesource.com/{k['name']}/+archive/{k['rev']}.tar.gz" 
+              },
+              "clang": { 
+                  "revision": c['rev'], 
+                  "url": f"https://android.googlesource.com/{c['name']}/+archive/{c['rev']}.tar.gz" 
+              },
+              "rust": { 
+                  "revision": r_proj['rev'], 
+                  "url": f"https://android.googlesource.com/{r_proj['name']}/+archive/{r_proj['rev']}/linux-x86/{rust_ver}.tar.gz" 
+              },
+              "clang_tools": { 
+                  "revision": projects['tools']['rev'], 
+                  "url": f"https://android.googlesource.com/{projects['tools']['name']}/+archive/{projects['tools']['rev']}/linux-x86/bin.tar.gz" 
+              }
           }
-          with open('toolchains.json', 'w') as f:
-              json.dump(data, f, indent=2)
 
-      - name: Upload Artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: toolchain-config
-          path: toolchains.json
+          with open('toolchains.json', 'w') as f:
+              json.dump(final_data, f, indent=2)
+
+      - name: Commit and Push toolchains.json
+        run: |
+          git config --local user.email "github-actions[bot]@users.noreply.github.com"
+          git config --local user.name "github-actions[bot]"
+          git add toolchains.json
+          # 检查文件是否有变动，避免空的 commit
+          if git diff --staged --quiet; then
+            echo "No changes to toolchains.json"
+          else
+            git commit -m "Sync toolchains: ${{ inputs.manifest_branch }}"
+            git push
+          fi
