@@ -36,6 +36,7 @@ jobs:
           import json
           import sys
           import re
+          import subprocess
           from lxml import etree
 
           tag = "${{ github.event.inputs.manifest_tag }}"
@@ -45,7 +46,7 @@ jobs:
               if not commit or not path:
                   return ""
               
-              # 完整 hash
+              # 判断是否为完整的 40 位 commit hash
               if re.fullmatch(r'[0-9a-f]{40}', commit):
                   url = f"{base_url}/{repo}/+/{commit}/{path}?format=TEXT"
                   print(f"DEBUG: hash url={url}")
@@ -85,7 +86,20 @@ jobs:
               
               return ""
 
-          # 获取 manifest
+          def get_commit_hash(repo, rev):
+              """通过 git ls-remote 获取 commit hash"""
+              url = f"https://android.googlesource.com/{repo}"
+              try:
+                  result = subprocess.run(['git', 'ls-remote', url, rev], capture_output=True, text=True, timeout=30)
+                  if result.stdout:
+                      lines = result.stdout.strip().split()
+                      if lines:
+                          return lines[0]
+              except Exception as e:
+                  print(f"ERROR getting hash for {repo} {rev}: {e}")
+              return rev
+
+          # 1. 获取 manifest
           m_raw = fetch_raw("kernel/manifest", tag, "default.xml")
           if not m_raw:
               print(f"CRITICAL: Cannot fetch manifest for {tag}")
@@ -124,8 +138,12 @@ jobs:
           
           print(f"DEBUG: common rev={common['rev']}")
           
-          mk_text = fetch_raw(common['repo'], common['rev'], "Makefile")
-          const_text = fetch_raw(common['repo'], common['rev'], "build.config.constants")
+          # 获取 common 仓库的实际 commit hash
+          common_hash = get_commit_hash(common['repo'], common['rev'])
+          print(f"DEBUG: common hash={common_hash}")
+          
+          mk_text = fetch_raw(common['repo'], common_hash, "Makefile")
+          const_text = fetch_raw(common['repo'], common_hash, "build.config.constants")
           
           print(f"DEBUG: mk_text length={len(mk_text)}")
           print(f"DEBUG: const_text length={len(const_text)}")
@@ -142,6 +160,19 @@ jobs:
           print(f"DEBUG: rust_v={rust_v}, clang_v={clang_v}, branch={branch}")
           print(f"DEBUG: kernel_ver={kernel_ver}")
           
+          # 获取工具链仓库的实际 commit hash
+          clang_item = project_map.get("prebuilts/clang/host/linux-x86")
+          rust_item = project_map.get("prebuilts/rust")
+          tools_item = project_map.get("prebuilts/clang-tools")
+          
+          clang_hash = get_commit_hash(clang_item['repo'], clang_item['rev']) if clang_item else ""
+          rust_hash = get_commit_hash(rust_item['repo'], rust_item['rev']) if rust_item else ""
+          tools_hash = get_commit_hash(tools_item['repo'], tools_item['rev']) if tools_item else ""
+          
+          print(f"DEBUG: clang_hash={clang_hash}")
+          print(f"DEBUG: rust_hash={rust_hash}")
+          print(f"DEBUG: tools_hash={tools_hash}")
+          
           def build_art(path, sub_path=""):
               item = project_map.get(path)
               if not item:
@@ -151,9 +182,20 @@ jobs:
                   rev_display = tag
               else:
                   rev_display = rev
+              # 对于工具链，需要使用实际 hash 来构造下载 URL
+              if path == "common":
+                  download_rev = common_hash
+              elif path == "prebuilts/clang/host/linux-x86":
+                  download_rev = clang_hash
+              elif path == "prebuilts/rust":
+                  download_rev = rust_hash
+              elif path == "prebuilts/clang-tools":
+                  download_rev = tools_hash
+              else:
+                  download_rev = rev
               return {
                   "revision": rev_display,
-                  "url": f"{base_url}/{item['repo']}/+archive/{rev}{sub_path}.tar.gz"
+                  "url": f"{base_url}/{item['repo']}/+archive/{download_rev}{sub_path}.tar.gz"
               }
           
           result = {
