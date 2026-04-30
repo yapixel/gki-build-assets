@@ -3,42 +3,34 @@ name: Parse Manifest
 on:
   workflow_dispatch:
     inputs:
-      kernel_tag:
+      manifest_branch:
         description: 'Manifest Branch'
         required: true
-        type: string
         default: 'common-android16-6.12-2025-06'
-
-permissions:
-  contents: write
 
 jobs:
   parse:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Download and Parse Manifest
-        id: manifest
+      - name: Download Manifest
         run: |
-          TAG="${{ inputs.kernel_tag }}"
+          TAG="${{ inputs.manifest_branch }}"
           URL="https://android.googlesource.com/kernel/manifest/+/refs/heads/${TAG}/default.xml?format=TEXT"
-          
           curl -fsL --retry 5 "$URL" | base64 -d > manifest.xml
-          
-          python3 << 'EOF'
-          import xml.etree.ElementTree as ET
-          import os
 
+      - name: Comprehensive Logic Parse
+        id: resolve
+        shell: python
+        run: |
+          import xml.etree.ElementTree as ET
+          import os, requests, base64, re
+
+          # 1. 解析 XML 基础信息
           tree = ET.parse('manifest.xml')
           root = tree.getroot()
-          default_rev = root.find('default').get('revision', '') if root.find('default') is not None else ""
-          
-          def set_out(name, val):
-              with open(os.environ['GITHUB_OUTPUT'], 'a') as f:
-                  f.write(f"{name}={val}\n")
+          default_rev = root.find('default').get('revision', '')
 
+          projects = {}
           targets = {
               "common": "kernel",
               "prebuilts/clang/host/linux-x86": "clang",
@@ -49,88 +41,78 @@ jobs:
           for proj in root.findall('project'):
               path = proj.get('path')
               if path in targets:
-                  key = targets[path]
-                  set_out(f"{key}_name", proj.get('name'))
-                  set_out(f"{key}_rev", proj.get('revision') or default_rev)
-          EOF
+                  projects[targets[path]] = {
+                      "name": proj.get('name'),
+                      "rev": proj.get('revision') or default_rev
+                  }
 
-      - name: Resolve Hashes and Version
-        id: resolve
-        run: |
-          get_hash() {
-            git ls-remote "https://android.googlesource.com/$1" "$2" | cut -f1 | head -1
+          def fetch_text(repo, rev, path=""):
+              url = f"https://android.googlesource.com/{repo}/+/{rev}/{path}?format=TEXT"
+              try:
+                  r = requests.get(url, timeout=10)
+                  return base64.b64decode(r.text).decode('utf-8')
+              except: return ""
+
+          results = {}
+
+          # 2. 准确提取内核版本 (Makefile)
+          k = projects['kernel']
+          mk = fetch_text(k['name'], k['rev'], "Makefile")
+          v = re.search(r'^VERSION\s*=\s*(\d+)', mk, re.M).group(1)
+          p = re.search(r'^PATCHLEVEL\s*=\s*(\d+)', mk, re.M).group(1)
+          s = re.search(r'^SUBLEVEL\s*=\s*(\d+)', mk, re.M).group(1)
+          results['kernel_version'] = f"{v}.{p}.{s}"
+          results['kernel_hash'] = k['rev']
+
+          # 3. 准确提取 Clang 版本 (Commit Message)
+          c = projects['clang']
+          c_info = fetch_text(c['name'], c['rev']) # 获取提交详情
+          c_ver = re.search(r'r\d+[a-z]?', c_info).group(0)
+          results['clang_version'] = c_ver
+          results['clang_hash'] = c['rev']
+
+          # 4. 准确提取 Rust 版本 (目录探测)
+          # 关键：我们去那个特定的 Hash 下面看 linux-x86 目录里到底有什么
+          r_proj = projects['rust']
+          ls_tree = fetch_text(r_proj['name'], r_proj['rev'], "linux-x86/")
+          # 解析 git ls-tree 格式的文本，提取目录名
+          # 格式通常为: 040000 tree <hash>    1.81.0
+          found_versions = re.findall(r'(\d+\.\d+\.\d+)', ls_tree)
+          
+          # 逻辑：如果存在多个，选最大的；如果没有，报错或兜底
+          if found_versions:
+              # 排除 stable 等软链接，只取纯数字版本
+              real_versions = sorted(found_versions, key=lambda x: [int(i) for i in x.split('.')])
+              rust_ver = real_versions[-1] 
+          else:
+              rust_ver = "1.81.0" # 极低概率下的兜底
+          
+          results['rust_version'] = rust_ver
+          results['rust_hash'] = r_proj['rev']
+          results['tools_hash'] = projects['tools']['rev']
+
+          # 5. 输出到 GITHUB_OUTPUT 和 JSON
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as f:
+              for key, val in results.items():
+                  f.write(f"{key}={val}\n")
+
+          # 写入 JSON
+          import json
+          data = {
+              "manifest_tag": "${{ inputs.manifest_branch }}",
+              "kernel_version": results['kernel_version'],
+              "clang_version": results['clang_version'],
+              "rust_version": results['rust_version'],
+              "kernel": { "revision": results['kernel_hash'], "url": f"https://android.googlesource.com/{projects['kernel']['name']}/+archive/{results['kernel_hash']}.tar.gz" },
+              "clang": { "revision": results['clang_hash'], "url": f"https://android.googlesource.com/{projects['clang']['name']}/+archive/{results['clang_hash']}.tar.gz" },
+              "rust": { "revision": results['rust_hash'], "url": f"https://android.googlesource.com/{projects['rust']['name']}/+archive/{results['rust_hash']}/linux-x86/{results['rust_version']}.tar.gz" },
+              "clang_tools": { "revision": results['tools_hash'], "url": f"https://android.googlesource.com/{projects['tools']['name']}/+archive/{results['tools_hash']}/linux-x86/bin.tar.gz" }
           }
+          with open('toolchains.json', 'w') as f:
+              json.dump(data, f, indent=2)
 
-          # 获取各组件 hash
-          K_REV="${{ steps.manifest.outputs.kernel_rev }}"
-          K_NAME="${{ steps.manifest.outputs.kernel_name }}"
-          K_HASH=$(get_hash "$K_NAME" "$K_REV")
-          
-          C_NAME="${{ steps.manifest.outputs.clang_name }}"
-          C_REV="${{ steps.manifest.outputs.clang_rev }}"
-          C_HASH=$(get_hash "$C_NAME" "$C_REV")
-          
-          R_NAME="${{ steps.manifest.outputs.rust_name }}"
-          R_REV="${{ steps.manifest.outputs.rust_rev }}"
-          R_HASH=$(get_hash "$R_NAME" "$R_REV")
-          
-          T_NAME="${{ steps.manifest.outputs.tools_name }}"
-          T_REV="${{ steps.manifest.outputs.tools_rev }}"
-          T_HASH=$(get_hash "$T_NAME" "$T_REV")
-
-          # 通过 CLANG_REVISIONS.json 获取 clang 版本号
-          CLANG_JSON_URL="https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+/refs/heads/main/CLANG_REVISIONS.json?format=TEXT"
-          curl -fsL --retry 5 "$CLANG_JSON_URL" | base64 -d > clang_revisions.json
-          C_VER=$(jq -r --arg hash "$C_HASH" '.[$hash].version' clang_revisions.json)
-          
-          # 获取内核版本号
-          echo "Fetching Makefile content..."
-          curl -fsL "https://android.googlesource.com/$K_NAME/+/$K_HASH/Makefile?format=TEXT" | base64 -d > Makefile.tmp
-          
-          V=$(grep "^VERSION =" Makefile.tmp | awk '{print $3}')
-          P=$(grep "^PATCHLEVEL =" Makefile.tmp | awk '{print $3}')
-          S=$(grep "^SUBLEVEL =" Makefile.tmp | awk '{print $3}')
-          [ -z "$S" ] && S="0"
-          
-          echo "kernel_full_version=$V.$P.$S" >> $GITHUB_OUTPUT
-          echo "kernel_hash=$K_HASH" >> $GITHUB_OUTPUT
-          echo "clang_hash=$C_HASH" >> $GITHUB_OUTPUT
-          echo "clang_version=$C_VER" >> $GITHUB_OUTPUT
-          echo "rust_hash=$R_HASH" >> $GITHUB_OUTPUT
-          echo "tools_hash=$T_HASH" >> $GITHUB_OUTPUT
-
-      - name: Generate toolchains.json
-        run: |
-          cat <<EOF > toolchains.json
-          {
-            "kernel_tag": "${{ inputs.kernel_tag }}",
-            "kernel_version": "${{ steps.resolve.outputs.kernel_full_version }}",
-            "last_update": "$(date -u +'%Y-%m-%dT%H:%M:%SZ')",
-            "kernel": {
-              "revision": "${{ steps.resolve.outputs.kernel_hash }}",
-              "url": "https://android.googlesource.com/${{ steps.manifest.outputs.kernel_name }}/+archive/${{ steps.resolve.outputs.kernel_hash }}.tar.gz"
-            },
-            "clang": {
-              "revision": "${{ steps.resolve.outputs.clang_hash }}",
-              "version": "${{ steps.resolve.outputs.clang_version }}",
-              "url": "https://android.googlesource.com/${{ steps.manifest.outputs.clang_name }}/+archive/${{ steps.resolve.outputs.clang_hash }}.tar.gz"
-            },
-            "rust": {
-              "revision": "${{ steps.resolve.outputs.rust_hash }}",
-              "url": "https://android.googlesource.com/${{ steps.manifest.outputs.rust_name }}/+archive/${{ steps.resolve.outputs.rust_hash }}/linux-x86/1.81.0.tar.gz"
-            },
-            "clang_tools": {
-              "revision": "${{ steps.resolve.outputs.tools_hash }}",
-              "url": "https://android.googlesource.com/${{ steps.manifest.outputs.tools_name }}/+archive/${{ steps.resolve.outputs.tools_hash }}/linux-x86/bin.tar.gz"
-            }
-          }
-          EOF
-          cat toolchains.json
-
-      - name: Commit and push toolchains.json
-        run: |
-          git config --local user.email "github-actions[bot]@users.noreply.github.com"
-          git config --local user.name "github-actions[bot]"
-          git add toolchains.json
-          git diff --quiet && git diff --staged --quiet || git commit -m "Update toolchains.json for ${{ inputs.kernel_tag }}"
-          git push
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: toolchain-config
+          path: toolchains.json
