@@ -1,0 +1,185 @@
+name: Parse Full Environment
+
+on:
+  workflow_dispatch:
+    inputs:
+      kernel_manifest_url:
+        description: 'Kernel manifest URL'
+        required: true
+        type: string
+        default: 'https://android.googlesource.com/kernel/manifest/+/refs/heads/common-android16-6.12-2025-06/default.xml?format=TEXT'
+      clang_manifest_url:
+        description: 'Clang manifest URL'
+        required: true
+        type: string
+        default: 'https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+/refs/heads/main-kernel-2025/clang-r536225/manifest_14043575.xml?format=TEXT'
+
+permissions:
+  contents: write
+
+jobs:
+  parse:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: sudo apt-get update && sudo apt-get install -y jq
+
+      - name: Download and parse kernel manifest
+        id: kernel
+        run: |
+          curl -fsL --retry 5 "${{ github.event.inputs.kernel_manifest_url }}" | base64 -d > kernel_manifest.xml
+          
+          python3 << 'EOF'
+          import xml.etree.ElementTree as ET
+          import os
+          import json
+          
+          tree = ET.parse('kernel_manifest.xml')
+          root = tree.getroot()
+          
+          default = root.find('default')
+          default_rev = default.get('revision') if default is not None else ""
+          
+          # 提取关键项目
+          projects = {}
+          for project in root.findall('project'):
+              path = project.get('path')
+              name = project.get('name')
+              revision = project.get('revision') or default_rev
+              
+              if path in ['common', 'prebuilts/rust', 'prebuilts/clang-tools']:
+                  projects[path] = {
+                      "name": name,
+                      "revision": revision,
+                      "source": "kernel_manifest"
+                  }
+          
+          with open('kernel_manifest.json', 'w') as f:
+              json.dump(projects, f, indent=2)
+          
+          print(f"Extracted {len(projects)} projects from kernel manifest")
+          EOF
+
+      - name: Download and parse clang manifest
+        id: clang
+        run: |
+          curl -fsL --retry 5 "${{ github.event.inputs.clang_manifest_url }}" | base64 -d > clang_manifest.xml
+          
+          python3 << 'EOF'
+          import xml.etree.ElementTree as ET
+          import os
+          import json
+          import re
+          
+          tree = ET.parse('clang_manifest.xml')
+          root = tree.getroot()
+          
+          default = root.find('default')
+          default_rev = default.get('revision') if default is not None else ""
+          
+          # 提取 clang 版本号
+          version_match = re.search(r'r(\d+)', default_rev)
+          clang_version = f"r{version_match.group(1)}" if version_match else ""
+          
+          # 提取关键项目
+          projects = {}
+          for project in root.findall('project'):
+              path = project.get('path')
+              name = project.get('name')
+              revision = project.get('revision') or default_rev
+              
+              # 只保留需要的组件
+              if path in ['prebuilts/clang/host/linux-x86', 'prebuilts/build-tools', 'toolchain/llvm-project']:
+                  projects[path] = {
+                      "name": name,
+                      "revision": revision,
+                      "source": "clang_manifest"
+                  }
+          
+          result = {
+              "clang_version": clang_version,
+              "components": projects
+          }
+          
+          with open('clang_manifest.json', 'w') as f:
+              json.dump(result, f, indent=2)
+          
+          print(f"Clang version: {clang_version}")
+          print(f"Extracted {len(projects)} components from clang manifest")
+          EOF
+
+      - name: Download kernel build.config.constants
+        id: build_config
+        run: |
+          # 从 kernel manifest 中获取 common 的 revision
+          COMMON_REV=$(jq -r '.["common"].revision' kernel_manifest.json)
+          KERNEL_URL="https://android.googlesource.com/kernel/common/+/refs/heads/${COMMON_REV}/build.config.constants?format=TEXT"
+          
+          echo "Downloading build.config.constants from: $KERNEL_URL"
+          curl -fsL --retry 5 "$KERNEL_URL" | base64 -d > build.config.constants
+          
+          # 提取版本信息
+          CLANG_VER=$(grep "^CLANG_VERSION=" build.config.constants | cut -d'=' -f2 | tr -d '"')
+          RUST_VER=$(grep "^RUSTC_VERSION=" build.config.constants | cut -d'=' -f2 | tr -d '"')
+          BRANCH=$(grep "^BRANCH=" build.config.constants | cut -d'=' -f2 | tr -d '"')
+          
+          echo "clang_version=${CLANG_VER}" >> $GITHUB_OUTPUT
+          echo "rust_version=${RUST_VER}" >> $GITHUB_OUTPUT
+          echo "branch=${BRANCH}" >> $GITHUB_OUTPUT
+
+      - name: Generate complete environment JSON
+        run: |
+          python3 << 'EOF'
+          import json
+          import os
+          
+          # 读取各 manifest 的解析结果
+          with open('kernel_manifest.json', 'r') as f:
+              kernel_components = json.load(f)
+          
+          with open('clang_manifest.json', 'r') as f:
+              clang_data = json.load(f)
+              clang_components = clang_data.get('components', {})
+          
+          # 构建完整的环境配置
+          env_config = {
+              "environment": "14043575",
+              "last_update": os.popen('date -u +"%Y-%m-%dT%H:%M:%SZ"').read().strip(),
+              "kernel": {
+                  "branch": "${{ steps.build_config.outputs.branch }}",
+                  "rust_version": "${{ steps.build_config.outputs.rust_version }}",
+                  "clang_version": "${{ steps.build_config.outputs.clang_version }}"
+              },
+              "components": {}
+          }
+          
+          # 合并所有组件
+          for path, info in kernel_components.items():
+              env_config["components"][path] = info
+          
+          for path, info in clang_components.items():
+              env_config["components"][path] = info
+          
+          # 添加 clang 版本信息
+          env_config["clang_toolchain"] = {
+              "version": clang_data.get("clang_version", ""),
+              "manifest": "14043575"
+          }
+          
+          with open('env-14043575.json', 'w') as f:
+              json.dump(env_config, f, indent=2)
+          
+          print("Generated env-14043575.json")
+          print(json.dumps(env_config, indent=2))
+          EOF
+
+      - name: Commit and push JSON
+        run: |
+          git config --local user.email "github-actions[bot]@users.noreply.github.com"
+          git config --local user.name "github-actions[bot]"
+          git add env-14043575.json
+          git diff --quiet && git diff --staged --quiet || git commit -m "Update environment config for 14043575"
+          git push
