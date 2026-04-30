@@ -8,23 +8,28 @@
   },
   "artifacts": {
     "kernel": {
-      "revision": "common-android16-6.12-2025-06",
+      "source_branch": "android16-6.12-2025-06",
+      "commit_hash": "73c089ee309c2da02ed70ba8e4eebbc5be463acc",
       "url": "https://android.googlesource.com/kernel/common/+archive/73c089ee309c2da02ed70ba8e4eebbc5be463acc.tar.gz"
     },
     "clang": {
-      "revision": "main-kernel-2025",
+      "source_branch": "main-kernel-2025",
+      "commit_hash": "77c95e8253c2c82ffd4fee92c0ad9f5ac1e8ca04",
       "url": "https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/77c95e8253c2c82ffd4fee92c0ad9f5ac1e8ca04/clang-r536225.tar.gz"
     },
     "rust": {
-      "revision": "main-kernel-2025",
+      "source_branch": "main-kernel-2025",
+      "commit_hash": "4c613cfb8c5ca9689614fb2110bfd03a2a2f641a",
       "url": "https://android.googlesource.com/platform/prebuilts/rust/+archive/4c613cfb8c5ca9689614fb2110bfd03a2a2f641a/linux-x86/1.82.0.tar.gz"
     },
     "clang_tools": {
-      "revision": "main-kernel-2025",
+      "source_branch": "main-kernel-2025",
+      "commit_hash": "c03d5bc912878cdcbdc38fcb003e94116b978956",
       "url": "https://android.googlesource.com/platform/prebuilts/clang-tools/+archive/c03d5bc912878cdcbdc38fcb003e94116b978956/linux-x86/bin.tar.gz"
     },
     "build_tools": {
-      "revision": "main-kernel-2025",
+      "source_branch": "main-kernel-2025",
+      "commit_hash": "574765b494f226284968a8d156437e4c932aad61",
       "url": "https://android.googlesource.com/platform/prebuilts/build-tools/+archive/574765b494f226284968a8d156437e4c932aad61.tar.gz"
     }
   }
