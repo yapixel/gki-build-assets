@@ -23,6 +23,10 @@ jobs:
         with:
           python-version: '3.10'
 
+      - name: Install Dependencies
+        # 修复点：必须手动安装 requests 才能运行后续脚本
+        run: pip install requests
+
       - name: Resolve Environment
         shell: python
         run: |
@@ -32,6 +36,7 @@ jobs:
           import re
           import json
           import subprocess
+          import sys
 
           tag = "${{ github.event.inputs.manifest_tag }}"
           base_url = "https://android.googlesource.com"
@@ -45,14 +50,21 @@ jobs:
 
           def get_hash(repo, rev):
               url = f"{base_url}/{repo}"
-              return subprocess.check_output(["git", "ls-remote", url, rev]).decode().split()[0]
+              try:
+                  return subprocess.check_output(["git", "ls-remote", url, rev]).decode().split()[0]
+              except:
+                  return rev
 
-          # 1. 解析 Manifest 锁定各仓库哈希
+          # 1. 解析 Manifest 锁定哈希
           m_raw = fetch_raw("kernel/manifest", f"refs/heads/{tag}", "default.xml")
+          if not m_raw:
+              print(f"Error: Cannot find manifest for {tag}")
+              sys.exit(1)
+
           root = ET.fromstring(m_raw)
           def_rev = root.find('default').get('revision')
 
-          # 这里的 path 必须和 AOSP 结构物理对齐
+          # 物理仓库映射
           mapping = {
               "common": "kernel/common",
               "prebuilts/clang/host/linux-x86": "platform/prebuilts/clang/host/linux-x86",
@@ -69,17 +81,19 @@ jobs:
                       "hash": get_hash(p.get('name'), p.get('revision') or def_rev)
                   }
 
-          # 2. 远程读取 Makefile (获取 6.12.x)
+          # 2. 远程读取 Makefile (精准抓取 VERSION.PATCHLEVEL.SUBLEVEL)
           mk_text = fetch_raw(nodes['common']['repo'], nodes['common']['hash'], "Makefile")
           def get_mk(key):
-              return re.search(rf'^{key}\s*=\s*(\d+)', mk_text, re.M).group(1)
+              # 匹配 VERSION = 6 这种带空格的赋值
+              match = re.search(rf'^{key}\s*=\s*(\d+)', mk_text, re.M)
+              return match.group(1) if match else "0"
           
           real_ver = f"{get_mk('VERSION')}.{get_mk('PATCHLEVEL')}.{get_mk('SUBLEVEL')}"
 
-          # 3. 远程读取 Constants (获取构建契约)
+          # 3. 远程读取 Constants (物理搬运 Clang/Rust 契约)
           const_text = fetch_raw(nodes['common']['repo'], nodes['common']['hash'], "build.config.constants")
           def get_const(key):
-              # 严禁修剪！匹配所有非空、非引号字符，保留 .p1 等所有后缀
+              # 严禁丢掉 .p1：匹配到行尾，剥离潜在引号
               match = re.search(rf'^{key}=["\']?([^\s"\']+)["\']?$', const_text, re.M)
               return match.group(1) if match else "unknown"
 
@@ -87,7 +101,7 @@ jobs:
           clang_v = get_const("CLANG_VERSION")
           rust_v = get_const("RUSTC_VERSION")
 
-          # 4. 生成最终对齐文件
+          # 4. 构造 JSON
           time_stamp = "-".join(tag.split('-')[-2:])
           result = {
               "manifest_tag": tag,
@@ -100,8 +114,7 @@ jobs:
               "artifacts": {
                   "kernel": {
                       "revision": nodes['common']['hash'],
-                      "url": f"{base_url}/{nodes['common']['repo']}/+archive/{nodes['common']['hash']}.tar.gz",
-                      "download_name": f"{off_branch}-{time_stamp}.tar.gz"
+                      "url": f"{base_url}/{nodes['common']['repo']}/+archive/{nodes['common']['hash']}.tar.gz"
                   },
                   "clang": {
                       "revision": nodes['prebuilts/clang/host/linux-x86']['hash'],
@@ -117,10 +130,10 @@ jobs:
           with open('toolchains.json', 'w') as f:
               json.dump(result, f, indent=2)
 
-      - name: Commit result
+      - name: Commit and Push
         run: |
           git config --local user.email "action@github.com"
           git config --local user.name "GitHub Action"
           git add toolchains.json
-          git commit -m "Sync: ${ { github.event.inputs.manifest_tag } }" || exit 0
+          git commit -m "Sync AOSP version for ${{ github.event.inputs.manifest_tag }}" || exit 0
           git push
