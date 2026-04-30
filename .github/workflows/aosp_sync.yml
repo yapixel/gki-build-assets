@@ -1,12 +1,12 @@
-name: AOSP Toolchain Sync
+name: AOSP Toolchain Sync (Raw Truth)
 
 on:
   workflow_dispatch:
     inputs:
-      branch:
-        description: 'AOSP Kernel Branch'
+      manifest_tag:
+        description: 'AOSP Manifest Tag'
         required: true
-        default: 'android16-6.12'
+        default: 'common-android16-6.12-2025-06'
 
 permissions:
   contents: write
@@ -18,22 +18,35 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v6
 
-      - name: Resolve and Extraction
+      - name: Raw Physical Extraction
         shell: bash
         run: |
-          BRANCH="${{ github.event.inputs.branch }}"
+          TAG="${{ github.event.inputs.manifest_tag }}"
           BASE="https://android.googlesource.com"
 
-          # 1. 抓取函数：还原文本流并清理回车符
+          # 1. 物理抓取原始字节流
           fetch_raw() {
-            curl -s "$BASE/$1/+/$BRANCH/$2?format=TEXT" | base64 -d | tr -d '\r'
+            curl -s "$BASE/$1/+/$2/$3?format=TEXT" | base64 -d | tr -d '\r'
           }
 
-          # 2. 现场采样
-          fetch_raw "kernel/common" "Makefile" > Makefile
-          fetch_raw "kernel/common" "build.config.constants" > constants
+          # 2. 从 Manifest 提取该 Tag 锁定的各仓库 Revision
+          M_RAW=$(fetch_raw "kernel/manifest" "refs/heads/$TAG" "default.xml")
+          
+          # 使用 Perl 提取 path 对应的 revision 属性，不带任何预设
+          get_rev() {
+            echo "$M_RAW" | perl -ne "print \$1 if /path=\"$1\".*revision=\"([^\"]+)\"/"
+          }
 
-          # 3. Perl 精准提取：确保不丢弃任何补丁后缀 (.p1 等)
+          COMMON_HASH=$(get_rev "common")
+          CLANG_HASH=$(get_rev "prebuilts/clang/host/linux-x86")
+          RUST_HASH=$(get_rev "prebuilts/rust")
+          TOOLS_HASH=$(get_rev "prebuilts/clang-tools")
+
+          # 3. 在对应的 COMMON_HASH 下采样配置文件
+          fetch_raw "kernel/common" "$COMMON_HASH" "Makefile" > Makefile
+          fetch_raw "kernel/common" "$COMMON_HASH" "build.config.constants" > constants
+
+          # 4. Perl 物理采样：[^'\"#\s]+ 逻辑，只认字节，不认版本号长相
           get_val() {
             perl -ne "print \$1 if /^\s*$1\s*=\s*['\"]?([^'\"#\s]+)/" "$2"
           }
@@ -45,22 +58,13 @@ jobs:
           V=$(get_val "VERSION" "Makefile")
           P=$(get_val "PATCHLEVEL" "Makefile")
           S=$(get_val "SUBLEVEL" "Makefile")
+          # 直接物理组合版本号
           KERNEL_V="${V}.${P}.${S}"
 
-          # 4. 补全仓库哈希定位
-          get_hash() {
-             git ls-remote "$BASE/$1" "refs/heads/main" | awk '{print $1}'
-          }
-          
-          COMMON_HASH=$(git ls-remote "$BASE/kernel/common" "refs/heads/$BRANCH" | awk '{print $1}')
-          CLANG_HASH=$(get_hash "platform/prebuilts/clang/host/linux-x86")
-          RUST_HASH=$(get_hash "platform/prebuilts/rust")
-          TOOLS_HASH=$(get_hash "platform/prebuilts/clang-tools")
-
-          # 5. 构造最终 JSON (包含所有缺失的 artifacts)
+          # 5. 生成 JSON：解析出什么，就是什么
           cat <<EOF > toolchains.json
           {
-            "manifest_tag": "HEAD-$BRANCH",
+            "manifest_tag": "$TAG",
             "kernel_info": {
               "official_branch": "$OFF_BRANCH",
               "real_version": "$KERNEL_V",
@@ -68,31 +72,20 @@ jobs:
               "rust_version": "$RUST_V"
             },
             "artifacts": {
-              "kernel": { 
-                "revision": "$COMMON_HASH", 
-                "url": "$BASE/kernel/common/+archive/$COMMON_HASH.tar.gz" 
-              },
-              "clang": { 
-                "revision": "$CLANG_HASH",
-                "url": "$BASE/platform/prebuilts/clang/host/linux-x86/+archive/$CLANG_HASH/clang-$CLANG_V.tar.gz" 
-              },
-              "rust": { 
-                "revision": "$RUST_HASH",
-                "url": "$BASE/platform/prebuilts/rust/+archive/$RUST_HASH/linux-x86/$RUST_V.tar.gz" 
-              },
-              "clang_tools": { 
-                "revision": "$TOOLS_HASH",
-                "url": "$BASE/platform/prebuilts/clang-tools/+archive/$TOOLS_HASH/linux-x86/bin.tar.gz" 
-              }
+              "kernel": { "revision": "$COMMON_HASH", "url": "$BASE/kernel/common/+archive/$COMMON_HASH.tar.gz" },
+              "clang": { "revision": "$CLANG_HASH", "url": "$BASE/platform/prebuilts/clang/host/linux-x86/+archive/$CLANG_HASH/clang-$CLANG_V.tar.gz" },
+              "rust": { "revision": "$RUST_HASH", "url": "$BASE/platform/prebuilts/rust/+archive/$RUST_HASH/linux-x86/$RUST_V.tar.gz" },
+              "clang_tools": { "revision": "$TOOLS_HASH", "url": "$BASE/platform/prebuilts/clang-tools/+archive/$TOOLS_HASH/linux-x86/bin.tar.gz" }
             }
           }
           EOF
 
       - name: Commit and Push
         run: |
-          RUST_V=$(jq -r '.kernel_info.rust_version' toolchains.json)
+          # 仅做展示，不做任何逻辑干预
+          cat toolchains.json
           git config --local user.email "action@github.com"
           git config --local user.name "GitHub Action"
           git add toolchains.json
-          git commit -m "Sync HEAD: $RUST_V" || exit 0
+          git commit -m "Sync: ${{ github.event.inputs.manifest_tag }}" || exit 0
           git push
