@@ -23,6 +23,12 @@ jobs:
         with:
           python-version: '3.10'
 
+      # 关键步骤：安装 requests 库，否则脚本无法发起 HTTP 请求
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install requests
+
       - name: Raw Logic Extraction
         shell: python
         run: |
@@ -32,29 +38,29 @@ jobs:
           import json
           import sys
 
-          # 1. 配置物理参数
           tag = "${{ github.event.inputs.manifest_tag }}"
           base_url = "https://android.googlesource.com"
 
           def fetch_raw(repo, commit, path):
               url = f"{base_url}/{repo}/+/{commit}/{path}?format=TEXT"
               try:
+                  # 物理请求：拿到 Base64 编码的原始文本
                   r = requests.get(url, timeout=20)
                   if r.status_code == 200:
                       return base64.b64decode(r.text).decode('utf-8', errors='ignore')
               except: pass
               return ""
 
-          # 2. 采样 Manifest (XML 物理树)
+          # 1. 物理采样 Manifest
           m_raw = fetch_raw("kernel/manifest", f"refs/heads/{tag}", "default.xml")
           if not m_raw:
-              print(f"CRITICAL ERROR: Manifest for {tag} not found.")
+              print(f"CRITICAL: Manifest for {tag} not found.")
               sys.exit(1)
           
           root = ET.fromstring(m_raw)
           def_rev = root.find('default').get('revision') if root.find('default') is not None else ""
 
-          # 建立 path -> {repo, rev} 映射，解析出什么就是什么
+          # 建立 path -> {repo, rev} 映射
           project_map = {
               p.get('path'): {
                   "repo": p.get('name'),
@@ -62,36 +68,34 @@ jobs:
               } for p in root.findall('project') if p.get('path')
           }
 
-          # 3. 物理切片提取 (不做任何补全或修正)
+          # 2. 物理提取函数：不加戏，不补全，只认等号右边
           def get_val(text, key):
               for line in text.splitlines():
                   line = line.strip()
                   if line.startswith(f"{key}=") or line.startswith(f"{key} ="):
-                      # 抓取等号后、注释前的内容，保留所有原始后缀
+                      # 拿到等号后的所有内容，去掉引号和注释，保留 .p1 等补丁后缀
                       val = line.split('=', 1)[1].split('#')[0].strip()
                       return val.strip('"').strip("'")
               return "NOT_FOUND"
 
           common = project_map.get("common")
           if not common:
-              print("CRITICAL ERROR: 'common' repository not defined in manifest.")
-              sys.exit(1)
+              sys.exit("CRITICAL: 'common' project missing.")
 
           mk_text = fetch_raw(common['repo'], common['rev'], "Makefile")
           const_text = fetch_raw(common['repo'], common['rev'], "build.config.constants")
 
-          # 4. 构建输出 (拒绝凑数据)
           rust_v = get_val(const_text, "RUSTC_VERSION")
           clang_v = get_val(const_text, "CLANG_VERSION")
 
-          def build_artifact(path, suffix=""):
+          # 3. 构造输出
+          def build_art(path, sub_path=""):
               item = project_map.get(path)
               if not item: return {"revision": "MISSING", "url": ""}
-              # 只有当 revision 存在时才拼接 URL，不使用分支名顶替
               rev = item['rev']
               return {
                   "revision": rev,
-                  "url": f"{base_url}/{item['repo']}/+archive/{rev}{suffix}.tar.gz"
+                  "url": f"{base_url}/{item['repo']}/+archive/{rev}{sub_path}.tar.gz"
               }
 
           result = {
@@ -103,16 +107,15 @@ jobs:
                   "rust_version": rust_v
               },
               "artifacts": {
-                  "kernel": build_artifact("common"),
-                  "clang": build_artifact("prebuilts/clang/host/linux-x86", f"/clang-{clang_v}"),
-                  "rust": build_artifact("prebuilts/rust", f"/linux-x86/{rust_v}"),
-                  "clang_tools": build_artifact("prebuilts/clang-tools", "/linux-x86/bin")
+                  "kernel": build_art("common"),
+                  "clang": build_art("prebuilts/clang/host/linux-x86", f"/clang-{clang_v}"),
+                  "rust": build_art("prebuilts/rust", f"/linux-x86/{rust_v}"),
+                  "clang_tools": build_art("prebuilts/clang-tools", "/linux-x86/bin")
               }
           }
 
           with open('toolchains.json', 'w') as f:
               json.dump(result, f, indent=2)
-          print("Extraction complete. Logic verified.")
 
       - name: Commit and Push
         run: |
