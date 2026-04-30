@@ -3,118 +3,121 @@ name: Parse Manifest
 on:
   workflow_dispatch:
     inputs:
-      kernel_version:
-        description: 'Kernel version tag (e.g. android16-6.12-2025-06)'
+      kernel_tag:
+        description: 'Manifest Branch (e.g. common-android16-6.12-2025-06)'
         required: true
         type: string
-        default: 'android16-6.12-2025-06'
+        default: 'common-android16-6.12-2025-06'
 
 jobs:
   parse:
     runs-on: ubuntu-latest
     steps:
-      - name: Install dependencies
-        run: sudo apt-get update && sudo apt-get install -y xmlstarlet
-
-      - name: Download and parse Manifest
+      - name: Download and Parse Manifest
         id: manifest
         run: |
-          KERNEL_REV="${{ inputs.kernel_version }}"
-          MANIFEST_URL="https://android.googlesource.com/kernel/manifest/+/refs/heads/common-android16-6.12/default.xml?format=TEXT"
+          # 1. 下载并解码 Manifest
+          # 修正：根据输入动态切换分支
+          TAG="${{ inputs.kernel_tag }}"
+          URL="https://android.googlesource.com/kernel/manifest/+/refs/heads/${TAG}/default.xml?format=TEXT"
           
-          echo "Downloading manifest from: $MANIFEST_URL"
+          echo "Downloading from: $URL"
+          curl -fsL --retry 5 "$URL" | base64 -d > manifest.xml
           
-          # 使用 Python 解码 base64
-          curl -fsL --retry 5 "$MANIFEST_URL" | python3 -c "
-          import sys, base64
-          sys.stdout.buffer.write(base64.b64decode(sys.stdin.read()))
-          " > manifest.xml
-          
-          # 验证 XML
-          if ! head -1 manifest.xml | grep -q "<?xml"; then
-            echo "Error: Invalid manifest downloaded"
-            exit 1
-          fi
-          
-          # 提取 kernel revision
-          KERNEL_REVISION=$(xmlstarlet sel -t -v "//project[@path='common']/@revision" manifest.xml)
-          echo "kernel_revision=${KERNEL_REVISION}" >> $GITHUB_OUTPUT
-          
-          # 获取 default revision
-          DEFAULT_REV=$(xmlstarlet sel -t -v "//default/@revision" manifest.xml)
-          
-          # clang
-          CLANG_NAME=$(xmlstarlet sel -t -v "//project[@path='prebuilts/clang/host/linux-x86']/@name" manifest.xml)
-          CLANG_REV=$(xmlstarlet sel -t -v "//project[@path='prebuilts/clang/host/linux-x86']/@revision" manifest.xml)
-          [ -z "$CLANG_REV" ] && CLANG_REV="$DEFAULT_REV"
-          echo "clang_name=${CLANG_NAME}" >> $GITHUB_OUTPUT
-          echo "clang_rev=${CLANG_REV}" >> $GITHUB_OUTPUT
-          
-          # rust
-          RUST_NAME=$(xmlstarlet sel -t -v "//project[@path='prebuilts/rust']/@name" manifest.xml)
-          RUST_REV=$(xmlstarlet sel -t -v "//project[@path='prebuilts/rust']/@revision" manifest.xml)
-          [ -z "$RUST_REV" ] && RUST_REV="$DEFAULT_REV"
-          echo "rust_name=${RUST_NAME}" >> $GITHUB_OUTPUT
-          echo "rust_rev=${RUST_REV}" >> $GITHUB_OUTPUT
-          
-          # clang-tools
-          TOOLS_NAME=$(xmlstarlet sel -t -v "//project[@path='prebuilts/clang-tools']/@name" manifest.xml)
-          TOOLS_REV=$(xmlstarlet sel -t -v "//project[@path='prebuilts/clang-tools']/@revision" manifest.xml)
-          [ -z "$TOOLS_REV" ] && TOOLS_REV="$DEFAULT_REV"
-          echo "tools_name=${TOOLS_NAME}" >> $GITHUB_OUTPUT
-          echo "tools_rev=${TOOLS_REV}" >> $GITHUB_OUTPUT
-          
-          echo "input_kernel_tag=${KERNEL_REV}" >> $GITHUB_OUTPUT
+          # 2. 使用 Python 一次性解析所有字段 (比 xmlstarlet 更稳)
+          python3 << 'EOF'
+          import xml.etree.ElementTree as ET
+          import os
 
-      - name: Convert branches to commit hashes
-        id: hashes
+          tree = ET.parse('manifest.xml')
+          root = tree.getroot()
+          
+          # 获取全局默认 revision
+          default_tag = root.find('default')
+          default_rev = default_tag.get('revision') if default_tag is not None else ""
+          
+          def set_output(name, value):
+              with open(os.environ['GITHUB_OUTPUT'], 'a') as f:
+                  f.write(f"{name}={value}\n")
+
+          # 解析目标项目
+          targets = {
+              "common": "kernel",
+              "prebuilts/clang/host/linux-x86": "clang",
+              "prebuilts/rust": "rust",
+              "prebuilts/clang-tools": "tools"
+          }
+
+          for project in root.findall('project'):
+              path = project.get('path')
+              if path in targets:
+                  key = targets[path]
+                  name = project.get('name')
+                  rev = project.get('revision') or default_rev
+                  set_output(f"{key}_name", name)
+                  set_output(f"{key}_rev", rev)
+          EOF
+
+      - name: Resolve Hashes and Kernel Version
+        id: resolve
         run: |
           get_hash() {
-            local repo=$1
-            local rev=$2
-            if [[ "$rev" =~ ^[0-9a-f]{40}$ ]]; then
-              echo "$rev"
-            else
-              git ls-remote "https://android.googlesource.com/${repo}" "$rev" | cut -f1 | head -1
-            fi
+            local repo=$1; local rev=$2
+            if [[ "$rev" =~ ^[0-9a-f]{40}$ ]]; then echo "$rev"
+            else git ls-remote "https://android.googlesource.com/$repo" "$rev" | cut -f1 | head -1; fi
           }
-          
-          CLANG_HASH=$(get_hash "${{ steps.manifest.outputs.clang_name }}" "${{ steps.manifest.outputs.clang_rev }}")
-          RUST_HASH=$(get_hash "${{ steps.manifest.outputs.rust_name }}" "${{ steps.manifest.outputs.rust_rev }}")
-          TOOLS_HASH=$(get_hash "${{ steps.manifest.outputs.tools_name }}" "${{ steps.manifest.outputs.tools_rev }}")
-          
-          echo "clang_hash=${CLANG_HASH}" >> $GITHUB_OUTPUT
-          echo "rust_hash=${RUST_HASH}" >> $GITHUB_OUTPUT
-          echo "tools_hash=${TOOLS_HASH}" >> $GITHUB_OUTPUT
 
-      - name: Generate raw toolchains.json
+          # 解析所有 Hash
+          K_HASH=$(get_hash "${{ steps.manifest.outputs.kernel_name }}" "${{ steps.manifest.outputs.kernel_rev }}")
+          C_HASH=$(get_hash "${{ steps.manifest.outputs.clang_name }}" "${{ steps.manifest.outputs.clang_rev }}")
+          R_HASH=$(get_hash "${{ steps.manifest.outputs.rust_name }}" "${{ steps.manifest.outputs.rust_rev }}")
+          T_HASH=$(get_hash "${{ steps.manifest.outputs.tools_name }}" "${{ steps.manifest.outputs.tools_rev }}")
+
+          # --- 核心：解析 6.12.23 逻辑 ---
+          echo "Fetching Makefile to parse kernel version..."
+          # 利用 git archive 远程读取 Makefile，无需 clone 整个仓库
+          URL_K="https://android.googlesource.com/${{ steps.manifest.outputs.kernel_name }}"
+          git archive --remote="$URL_K" "$K_HASH" Makefile | tar -xO > Makefile.tmp
+          
+          V=$(grep "^VERSION =" Makefile.tmp | awk '{print $3}')
+          P=$(grep "^PATCHLEVEL =" Makefile.tmp | awk '{print $3}')
+          S=$(grep "^SUBLEVEL =" Makefile.tmp | awk '{print $3}')
+          FULL_VER="$V.$P.$S"
+          
+          echo "kernel_full_version=$FULL_VER" >> $GITHUB_OUTPUT
+          echo "kernel_hash=$K_HASH" >> $GITHUB_OUTPUT
+          echo "clang_hash=$C_HASH" >> $GITHUB_OUTPUT
+          echo "rust_hash=$R_HASH" >> $GITHUB_OUTPUT
+          echo "tools_hash=$T_HASH" >> $GITHUB_OUTPUT
+
+      - name: Generate Final JSON
         run: |
-          python3 << 'PYTHON_SCRIPT'
-          import json
-          import os
-          
-          data = {
-              "kernel_revision": os.environ['KERNEL_REV'],
-              "kernel_url": os.environ['KERNEL_URL'],
-              "clang_url": os.environ['CLANG_URL'],
-              "rust_url": os.environ['RUST_URL'],
-              "clang_tools_url": os.environ['TOOLS_URL'],
-              "kernel_tag": os.environ['INPUT_KERNEL_TAG']
+          cat <<EOF > toolchains.json
+          {
+            "kernel_tag": "${{ inputs.kernel_tag }}",
+            "kernel_version": "${{ steps.resolve.outputs.kernel_full_version }}",
+            "kernel": {
+              "revision": "${{ steps.resolve.outputs.kernel_hash }}",
+              "url": "https://android.googlesource.com/${{ steps.manifest.outputs.kernel_name }}/+archive/${{ steps.resolve.outputs.kernel_hash }}.tar.gz"
+            },
+            "clang": {
+              "revision": "${{ steps.resolve.outputs.clang_hash }}",
+              "url": "https://android.googlesource.com/${{ steps.manifest.outputs.clang_name }}/+archive/${{ steps.resolve.outputs.clang_hash }}.tar.gz"
+            },
+            "rust": {
+              "revision": "${{ steps.resolve.outputs.rust_hash }}",
+              "url": "https://android.googlesource.com/${{ steps.manifest.outputs.rust_name }}/+archive/${{ steps.resolve.outputs.rust_hash }}/linux-x86/1.81.0.tar.gz"
+            },
+            "clang_tools": {
+              "revision": "${{ steps.resolve.outputs.tools_hash }}",
+              "url": "https://android.googlesource.com/${{ steps.manifest.outputs.tools_name }}/+archive/${{ steps.resolve.outputs.tools_hash }}/linux-x86/bin.tar.gz"
+            }
           }
-          
-          with open('raw-toolchains.json', 'w') as f:
-              json.dump(data, f, indent=2)
-          PYTHON_SCRIPT
-        env:
-          KERNEL_REV: ${{ steps.manifest.outputs.kernel_revision }}
-          KERNEL_URL: https://android.googlesource.com/kernel/common/+archive/${{ steps.manifest.outputs.kernel_revision }}.tar.gz
-          CLANG_URL: https://android.googlesource.com/${{ steps.manifest.outputs.clang_name }}/+archive/${{ steps.hashes.outputs.clang_hash }}.tar.gz
-          RUST_URL: https://android.googlesource.com/${{ steps.manifest.outputs.rust_name }}/+archive/${{ steps.hashes.outputs.rust_hash }}.tar.gz
-          TOOLS_URL: https://android.googlesource.com/${{ steps.manifest.outputs.tools_name }}/+archive/${{ steps.hashes.outputs.tools_hash }}/linux-x86/bin.tar.gz
-          INPUT_KERNEL_TAG: ${{ steps.manifest.outputs.input_kernel_tag }}
+          EOF
+          cat toolchains.json
 
-      - name: Upload artifact
+      - name: Upload
         uses: actions/upload-artifact@v4
         with:
-          name: raw-toolchains
-          path: raw-toolchains.json
+          name: toolchain-json
+          path: toolchains.json
