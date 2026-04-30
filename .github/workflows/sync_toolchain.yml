@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       kernel_tag:
-        description: 'Manifest Branch (e.g. common-android16-6.12-2025-06)'
+        description: 'Manifest Branch'
         required: true
         type: string
         default: 'common-android16-6.12-2025-06'
@@ -16,31 +16,25 @@ jobs:
       - name: Download and Parse Manifest
         id: manifest
         run: |
-          # 1. 下载并解码 Manifest
-          # 修正：根据输入动态切换分支
           TAG="${{ inputs.kernel_tag }}"
           URL="https://android.googlesource.com/kernel/manifest/+/refs/heads/${TAG}/default.xml?format=TEXT"
           
-          echo "Downloading from: $URL"
+          # 下载并解码
           curl -fsL --retry 5 "$URL" | base64 -d > manifest.xml
           
-          # 2. 使用 Python 一次性解析所有字段 (比 xmlstarlet 更稳)
+          # 使用 Python 提取核心组件信息
           python3 << 'EOF'
           import xml.etree.ElementTree as ET
           import os
 
           tree = ET.parse('manifest.xml')
           root = tree.getroot()
+          default_rev = root.find('default').get('revision', '') if root.find('default') is not None else ""
           
-          # 获取全局默认 revision
-          default_tag = root.find('default')
-          default_rev = default_tag.get('revision') if default_tag is not None else ""
-          
-          def set_output(name, value):
+          def set_out(name, val):
               with open(os.environ['GITHUB_OUTPUT'], 'a') as f:
-                  f.write(f"{name}={value}\n")
+                  f.write(f"{name}={val}\n")
 
-          # 解析目标项目
           targets = {
               "common": "kernel",
               "prebuilts/clang/host/linux-x86": "clang",
@@ -48,54 +42,53 @@ jobs:
               "prebuilts/clang-tools": "tools"
           }
 
-          for project in root.findall('project'):
-              path = project.get('path')
+          for proj in root.findall('project'):
+              path = proj.get('path')
               if path in targets:
                   key = targets[path]
-                  name = project.get('name')
-                  rev = project.get('revision') or default_rev
-                  set_output(f"{key}_name", name)
-                  set_output(f"{key}_rev", rev)
+                  set_out(f"{key}_name", proj.get('name'))
+                  set_out(f"{key}_rev", proj.get('revision') or default_rev)
           EOF
 
-      - name: Resolve Hashes and Kernel Version
+      - name: Resolve Hashes and Version
         id: resolve
         run: |
+          # 1. 转换 Hash 函数
           get_hash() {
-            local repo=$1; local rev=$2
-            if [[ "$rev" =~ ^[0-9a-f]{40}$ ]]; then echo "$rev"
-            else git ls-remote "https://android.googlesource.com/$repo" "$rev" | cut -f1 | head -1; fi
+            git ls-remote "https://android.googlesource.com/$1" "$2" | cut -f1 | head -1
           }
 
-          # 解析所有 Hash
-          K_HASH=$(get_hash "${{ steps.manifest.outputs.kernel_name }}" "${{ steps.manifest.outputs.kernel_rev }}")
+          K_REV="${{ steps.manifest.outputs.kernel_rev }}"
+          K_NAME="${{ steps.manifest.outputs.kernel_name }}"
+          
+          K_HASH=$(get_hash "$K_NAME" "$K_REV")
           C_HASH=$(get_hash "${{ steps.manifest.outputs.clang_name }}" "${{ steps.manifest.outputs.clang_rev }}")
           R_HASH=$(get_hash "${{ steps.manifest.outputs.rust_name }}" "${{ steps.manifest.outputs.rust_rev }}")
           T_HASH=$(get_hash "${{ steps.manifest.outputs.tools_name }}" "${{ steps.manifest.outputs.tools_rev }}")
 
-          # --- 核心：解析 6.12.23 逻辑 ---
-          echo "Fetching Makefile to parse kernel version..."
-          # 利用 git archive 远程读取 Makefile，无需 clone 整个仓库
-          URL_K="https://android.googlesource.com/${{ steps.manifest.outputs.kernel_name }}"
-          git archive --remote="$URL_K" "$K_HASH" Makefile | tar -xO > Makefile.tmp
+          # 2. 核心：通过 REST API 获取 Makefile 并解析 6.12.23
+          # 使用 +/refs/heads/ 或 +/<hash> 访问
+          echo "Fetching Makefile content..."
+          curl -fsL "https://android.googlesource.com/$K_NAME/+/$K_HASH/Makefile?format=TEXT" | base64 -d > Makefile.tmp
           
           V=$(grep "^VERSION =" Makefile.tmp | awk '{print $3}')
           P=$(grep "^PATCHLEVEL =" Makefile.tmp | awk '{print $3}')
           S=$(grep "^SUBLEVEL =" Makefile.tmp | awk '{print $3}')
-          FULL_VER="$V.$P.$S"
+          [ -z "$S" ] && S="0"
           
-          echo "kernel_full_version=$FULL_VER" >> $GITHUB_OUTPUT
+          echo "kernel_full_version=$V.$P.$S" >> $GITHUB_OUTPUT
           echo "kernel_hash=$K_HASH" >> $GITHUB_OUTPUT
           echo "clang_hash=$C_HASH" >> $GITHUB_OUTPUT
           echo "rust_hash=$R_HASH" >> $GITHUB_OUTPUT
           echo "tools_hash=$T_HASH" >> $GITHUB_OUTPUT
 
-      - name: Generate Final JSON
+      - name: Generate JSON
         run: |
           cat <<EOF > toolchains.json
           {
             "kernel_tag": "${{ inputs.kernel_tag }}",
             "kernel_version": "${{ steps.resolve.outputs.kernel_full_version }}",
+            "last_update": "$(date -u +'%Y-%m-%dT%H:%M:%SZ')",
             "kernel": {
               "revision": "${{ steps.resolve.outputs.kernel_hash }}",
               "url": "https://android.googlesource.com/${{ steps.manifest.outputs.kernel_name }}/+archive/${{ steps.resolve.outputs.kernel_hash }}.tar.gz"
@@ -116,8 +109,8 @@ jobs:
           EOF
           cat toolchains.json
 
-      - name: Upload
+      - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: toolchain-json
+          name: toolchain-config
           path: toolchains.json
