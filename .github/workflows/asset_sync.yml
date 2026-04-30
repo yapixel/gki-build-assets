@@ -1,0 +1,118 @@
+name: Download and Release
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  download:
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: sudo apt-get update && sudo apt-get install -y aria2 jq
+
+      - name: Read toolchains.json
+        id: config
+        run: |
+          KERNEL_TAG=$(jq -r '.manifest_tag' toolchains.json)
+          KERNEL_URL=$(jq -r '.artifacts.kernel.url' toolchains.json)
+          CLANG_URL=$(jq -r '.artifacts.clang.url' toolchains.json)
+          RUST_URL=$(jq -r '.artifacts.rust.url' toolchains.json)
+          TOOLS_URL=$(jq -r '.artifacts.clang_tools.url' toolchains.json)
+          BUILD_TOOLS_URL=$(jq -r '.artifacts.build_tools.url' toolchains.json)
+          CLANG_VER=$(jq -r '.kernel_info.clang_version' toolchains.json)
+          RUST_VER=$(jq -r '.kernel_info.rust_version' toolchains.json)
+          
+          echo "kernel_tag=${KERNEL_TAG}" >> $GITHUB_OUTPUT
+          echo "kernel_url=${KERNEL_URL}" >> $GITHUB_OUTPUT
+          echo "clang_url=${CLANG_URL}" >> $GITHUB_OUTPUT
+          echo "rust_url=${RUST_URL}" >> $GITHUB_OUTPUT
+          echo "tools_url=${TOOLS_URL}" >> $GITHUB_OUTPUT
+          echo "build_tools_url=${BUILD_TOOLS_URL}" >> $GITHUB_OUTPUT
+          echo "clang_version=${CLANG_VER}" >> $GITHUB_OUTPUT
+          echo "rust_version=${RUST_VER}" >> $GITHUB_OUTPUT
+
+      - name: Process clang
+        run: |
+          TAG="${{ steps.config.outputs.clang_version }}"
+          FILE="clang-${TAG}.tar.gz"
+          
+          if ! gh release view "$TAG" --repo yapixel/gki-build-assets &>/dev/null; then
+            gh release create "$TAG" --repo yapixel/gki-build-assets --title "$TAG" --notes "Toolchain components"
+          fi
+          
+          if gh release view "$TAG" --repo yapixel/gki-build-assets --json assets -q ".assets[].name" | grep -q "$FILE"; then
+            echo "$FILE already exists, skipping"
+            exit 0
+          fi
+          
+          aria2c -s16 -x16 -k1M "${{ steps.config.outputs.clang_url }}" -o "$FILE"
+          gh release upload "$TAG" "$FILE" --repo yapixel/gki-build-assets --clobber
+          rm "$FILE"
+
+      - name: Process rust
+        run: |
+          TAG="${{ steps.config.outputs.clang_version }}"
+          FILE="rust-${RUST_VER}.tar.gz"
+          
+          if gh release view "$TAG" --repo yapixel/gki-build-assets --json assets -q ".assets[].name" | grep -q "$FILE"; then
+            echo "$FILE already exists, skipping"
+            exit 0
+          fi
+          
+          aria2c -s16 -x16 -k1M "${{ steps.config.outputs.rust_url }}" -o "$FILE"
+          gh release upload "$TAG" "$FILE" --repo yapixel/gki-build-assets --clobber
+          rm "$FILE"
+
+      - name: Process clang-tools
+        run: |
+          TAG="${{ steps.config.outputs.clang_version }}"
+          FILE="clang-tools-${TAG}.tar.gz"
+          
+          if gh release view "$TAG" --repo yapixel/gki-build-assets --json assets -q ".assets[].name" | grep -q "$FILE"; then
+            echo "$FILE already exists, skipping"
+            exit 0
+          fi
+          
+          aria2c -s16 -x16 -k1M "${{ steps.config.outputs.tools_url }}" -o "$FILE"
+          gh release upload "$TAG" "$FILE" --repo yapixel/gki-build-assets --clobber
+          rm "$FILE"
+
+      - name: Process build-tools
+        run: |
+          TAG="${{ steps.config.outputs.clang_version }}"
+          FILE="build-tools-${TAG}.tar.gz"
+          
+          if gh release view "$TAG" --repo yapixel/gki-build-assets --json assets -q ".assets[].name" | grep -q "$FILE"; then
+            echo "$FILE already exists, skipping"
+            exit 0
+          fi
+          
+          aria2c -s16 -x16 -k1M "${{ steps.config.outputs.build_tools_url }}" -o "$FILE"
+          gh release upload "$TAG" "$FILE" --repo yapixel/gki-build-assets --clobber
+          rm "$FILE"
+
+      - name: Process kernel
+        run: |
+          TAG="${{ steps.config.outputs.kernel_tag }}"
+          FILE="${TAG#common-}.tar.gz"
+          
+          if ! gh release view "$TAG" --repo yapixel/gki-build-assets &>/dev/null; then
+            gh release create "$TAG" --repo yapixel/gki-build-assets --title "$TAG" --notes "Kernel source"
+          fi
+          
+          if gh release view "$TAG" --repo yapixel/gki-build-assets --json assets -q ".assets[].name" | grep -q "$FILE"; then
+            echo "$FILE already exists, skipping"
+            exit 0
+          fi
+          
+          aria2c -s16 -x16 -k1M "${{ steps.config.outputs.kernel_url }}" -o "$FILE"
+          gh release upload "$TAG" "$FILE" --repo yapixel/gki-build-assets --clobber
+          rm "$FILE"

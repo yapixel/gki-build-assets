@@ -145,7 +145,6 @@ jobs:
           print(f"DEBUG: mk_text length={len(mk_text)}")
           print(f"DEBUG: const_text length={len(const_text)}")
           
-          # 打印前几行用于调试
           if mk_text:
               print(f"DEBUG: mk_text preview={mk_text[:200]}")
           if const_text:
@@ -163,18 +162,21 @@ jobs:
           print(f"DEBUG: rust_v={rust_v}, clang_v={clang_v}, branch={branch}")
           print(f"DEBUG: kernel_ver={kernel_ver}")
           
-          # 获取工具链仓库的实际 commit hash
+          # 获取各工具链仓库的实际 commit hash
           clang_item = project_map.get("prebuilts/clang/host/linux-x86")
           rust_item = project_map.get("prebuilts/rust")
           tools_item = project_map.get("prebuilts/clang-tools")
+          build_tools_item = project_map.get("prebuilts/build-tools")
           
           clang_hash = get_commit_hash(clang_item['repo'], clang_item['rev']) if clang_item else ""
           rust_hash = get_commit_hash(rust_item['repo'], rust_item['rev']) if rust_item else ""
           tools_hash = get_commit_hash(tools_item['repo'], tools_item['rev']) if tools_item else ""
+          build_tools_hash = get_commit_hash(build_tools_item['repo'], build_tools_item['rev']) if build_tools_item else ""
           
           print(f"DEBUG: clang_hash={clang_hash}")
           print(f"DEBUG: rust_hash={rust_hash}")
           print(f"DEBUG: tools_hash={tools_hash}")
+          print(f"DEBUG: build_tools_hash={build_tools_hash}")
           
           def build_art(path, sub_path=""):
               item = project_map.get(path)
@@ -185,7 +187,7 @@ jobs:
                   rev_display = tag
               else:
                   rev_display = rev
-              # 对于工具链，需要使用实际 hash 来构造下载 URL
+              
               if path == "common":
                   download_rev = common_hash
               elif path == "prebuilts/clang/host/linux-x86":
@@ -194,8 +196,11 @@ jobs:
                   download_rev = rust_hash
               elif path == "prebuilts/clang-tools":
                   download_rev = tools_hash
+              elif path == "prebuilts/build-tools":
+                  download_rev = build_tools_hash
               else:
                   download_rev = rev
+              
               return {
                   "revision": rev_display,
                   "url": f"{base_url}/{item['repo']}/+archive/{download_rev}{sub_path}.tar.gz"
@@ -213,7 +218,8 @@ jobs:
                   "kernel": build_art("common"),
                   "clang": build_art("prebuilts/clang/host/linux-x86", f"/clang-{clang_v}"),
                   "rust": build_art("prebuilts/rust", f"/linux-x86/{rust_v}"),
-                  "clang_tools": build_art("prebuilts/clang-tools", "/linux-x86/bin")
+                  "clang_tools": build_art("prebuilts/clang-tools", "/linux-x86/bin"),
+                  "build_tools": build_art("prebuilts/build-tools")
               }
           }
           
