@@ -19,7 +19,7 @@ jobs:
         uses: actions/checkout@v6
 
       - name: Set up Python
-        uses: actions/setup-python@v6.2.0
+        uses: actions/setup-python@v6
         with:
           python-version: '3.10'
 
@@ -35,6 +35,7 @@ jobs:
           import json
           import subprocess
           import sys
+          import re
 
           tag = "${{ github.event.inputs.manifest_tag }}"
           base_url = "https://android.googlesource.com"
@@ -50,7 +51,7 @@ jobs:
               url = f"{base_url}/{repo}"
               return subprocess.check_output(["git", "ls-remote", url, rev]).decode().split()[0]
 
-          # 1. 物理定位：通过 Manifest 锁定 commit
+          # 1. 定位
           m_raw = fetch_raw("kernel/manifest", f"refs/heads/{tag}", "default.xml")
           if not m_raw: sys.exit(1)
           root = ET.fromstring(m_raw)
@@ -72,39 +73,32 @@ jobs:
                       "hash": get_hash(p.get('name'), p.get('revision') or def_rev)
                   }
 
-          # 2. 物理提取函数：绝对字符搬运，严防 .p1 截断
-          def extract_truth(text, key):
-              if not text: return "UNKNOWN"
-              # 统一换行符，防止 CRLF 干扰
-              lines = text.replace('\r', '').split('\n')
-              for line in lines:
-                  line = line.strip()
-                  # 找到以 KEY= 开头的行
-                  if line.startswith(f"{key}=") or line.startswith(f"{key} ="):
-                      # 取等号右边，剥离注释、空格和引号
-                      val = line.split('=', 1)[1].split('#')[0].strip()
-                      return val.strip('"').strip("'")
-              return "UNKNOWN"
+          # 2. 暴力提取：专门保住 .p1。不信 split，只信匹配结果。
+          def extract_hardcore(text, key):
+              # 匹配 KEY= 后面跟随的任何 字母、数字、点号、短横线
+              # 哪怕后面跟着换行符或空格，我也只要这个“版本号实体”
+              pattern = rf"^{key}\s*=\s*[\"']?([a-zA-Z0-9\.\-_]+)"
+              match = re.search(pattern, text, re.MULTILINE)
+              return match.group(1) if match else "UNKNOWN"
 
           mk_text = fetch_raw(nodes['common']['repo'], nodes['common']['hash'], "Makefile")
           const_text = fetch_raw(nodes['common']['repo'], nodes['common']['hash'], "build.config.constants")
 
-          # 物理抓取版本号
-          ver_v = extract_truth(mk_text, "VERSION")
-          ver_p = extract_truth(mk_text, "PATCHLEVEL")
-          ver_s = extract_truth(mk_text, "SUBLEVEL")
+          # 强制物理采样
+          v = extract_hardcore(mk_text, "VERSION")
+          p = extract_hardcore(mk_text, "PATCHLEVEL")
+          s = extract_hardcore(mk_text, "SUBLEVEL")
           
-          real_ver = f"{ver_v}.{ver_p}.{ver_s}".replace("UNKNOWN", "0")
-          off_branch = extract_truth(const_text, "BRANCH")
-          clang_v = extract_truth(const_text, "CLANG_VERSION")
-          rust_v = extract_truth(const_text, "RUSTC_VERSION")
+          rust_v = extract_hardcore(const_text, "RUSTC_VERSION")
+          clang_v = extract_hardcore(const_text, "CLANG_VERSION")
+          branch = extract_hardcore(const_text, "BRANCH")
 
-          # 3. 构造 100% 物理对齐的 JSON
+          # 3. 构造
           result = {
               "manifest_tag": tag,
               "kernel_info": {
-                  "official_branch": off_branch,
-                  "real_version": real_ver,
+                  "official_branch": branch,
+                  "real_version": f"{v}.{p}.{s}".replace("UNKNOWN", "0"),
                   "clang_version": clang_v,
                   "rust_version": rust_v
               },
@@ -129,12 +123,19 @@ jobs:
           }
 
           with open('toolchains.json', 'w') as f:
-              json.dump(result, f, indent=2)
+              json.dump(result, f, indent=2, ensure_ascii=False)
 
-      - name: Commit and Push
+      - name: Commit and Check
         run: |
+          # 如果生成的 JSON 还是没后缀，直接让 Workflow 报错，别丢人了
+          RUST_V=$(jq -r '.kernel_info.rust_version' toolchains.json)
+          echo "Final Rust Version in JSON: $RUST_V"
+          if [[ "$RUST_V" != *"p1"* ]]; then
+            echo "ERROR: .p1 suffix was lost again!"
+            exit 1
+          fi
           git config --local user.email "action@github.com"
           git config --local user.name "GitHub Action"
           git add toolchains.json
-          git commit -m "Sync: ${{ github.event.inputs.manifest_tag }} (Rust: $(jq -r '.kernel_info.rust_version' toolchains.json))" || exit 0
+          git commit -m "Sync: ${{ github.event.inputs.manifest_tag }} (Rust: $RUST_V)" || exit 0
           git push
