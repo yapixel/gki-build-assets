@@ -49,42 +49,23 @@ jobs:
               # 判断是否为完整的 40 位 commit hash
               if re.fullmatch(r'[0-9a-f]{40}', commit):
                   url = f"{base_url}/{repo}/+/{commit}/{path}?format=TEXT"
-                  print(f"DEBUG: hash url={url}")
-                  try:
-                      r = requests.get(url, timeout=30)
-                      if r.status_code == 200:
-                          text = r.text.strip()
-                          if text and text.startswith('PD94bWwg'):
-                              return base64.b64decode(text).decode('utf-8')
-                  except Exception as e:
-                      print(f"ERROR: {e}")
+              else:
+                  # 尝试作为 tag
+                  url = f"{base_url}/{repo}/+/refs/tags/{commit}/{path}?format=TEXT"
+              
+              try:
+                  r = requests.get(url, timeout=30)
+                  if r.status_code != 200:
+                      return ""
+                  text = r.text.strip()
+                  if not text:
+                      return ""
+                  # 直接尝试 Base64 解码
+                  decoded = base64.b64decode(text).decode('utf-8', errors='ignore')
+                  return decoded
+              except Exception as e:
+                  print(f"ERROR fetching {url}: {e}")
                   return ""
-              
-              # 尝试作为 tag
-              url = f"{base_url}/{repo}/+/refs/tags/{commit}/{path}?format=TEXT"
-              print(f"DEBUG: tag url={url}")
-              try:
-                  r = requests.get(url, timeout=30)
-                  if r.status_code == 200:
-                      text = r.text.strip()
-                      if text and text.startswith('PD94bWwg'):
-                          return base64.b64decode(text).decode('utf-8')
-              except Exception as e:
-                  print(f"ERROR: {e}")
-              
-              # 尝试作为分支
-              url = f"{base_url}/{repo}/+/refs/heads/{commit}/{path}?format=TEXT"
-              print(f"DEBUG: branch url={url}")
-              try:
-                  r = requests.get(url, timeout=30)
-                  if r.status_code == 200:
-                      text = r.text.strip()
-                      if text and text.startswith('PD94bWwg'):
-                          return base64.b64decode(text).decode('utf-8')
-              except Exception as e:
-                  print(f"ERROR: {e}")
-              
-              return ""
 
           def get_commit_hash(repo, rev):
               """通过 git ls-remote 获取 commit hash"""
@@ -148,12 +129,16 @@ jobs:
           print(f"DEBUG: mk_text length={len(mk_text)}")
           print(f"DEBUG: const_text length={len(const_text)}")
           
-          # 修正：使用正确的 key 名称
-          rust_v = get_val(const_text, "RUSTC_VERSION")   # 原 "RUST_VERSION" 改为 "RUSTC_VERSION"
+          # 打印前几行用于调试
+          if mk_text:
+              print(f"DEBUG: mk_text preview={mk_text[:200]}")
+          if const_text:
+              print(f"DEBUG: const_text preview={const_text[:200]}")
+          
+          rust_v = get_val(const_text, "RUSTC_VERSION")
           clang_v = get_val(const_text, "CLANG_VERSION")
           branch = get_val(const_text, "BRANCH")
           
-          # 解析内核版本
           ver = get_val(mk_text, "VERSION")
           patch = get_val(mk_text, "PATCHLEVEL")
           sub = get_val(mk_text, "SUBLEVEL")
