@@ -148,10 +148,12 @@ jobs:
           print(f"DEBUG: mk_text length={len(mk_text)}")
           print(f"DEBUG: const_text length={len(const_text)}")
           
-          rust_v = get_val(const_text, "RUSTC_VERSION")
+          # 修正：使用正确的 key 名称
+          rust_v = get_val(const_text, "RUSTC_VERSION")   # 原 "RUST_VERSION" 改为 "RUSTC_VERSION"
           clang_v = get_val(const_text, "CLANG_VERSION")
           branch = get_val(const_text, "BRANCH")
           
+          # 解析内核版本
           ver = get_val(mk_text, "VERSION")
           patch = get_val(mk_text, "PATCHLEVEL")
           sub = get_val(mk_text, "SUBLEVEL")
