@@ -4,9 +4,10 @@ on:
   workflow_dispatch:
     inputs:
       kernel_revision:
-        description: 'Kernel revision (e.g. android16-6.12-2025-06)'
+        description: 'Kernel revision'
         required: true
         type: string
+        default: 'android16-6.12-2025-06'
 
 jobs:
   parse:
