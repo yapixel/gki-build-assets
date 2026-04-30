@@ -30,6 +30,9 @@ jobs:
           CLANG_VER=$(jq -r '.kernel_info.clang_version' toolchains.json)
           RUST_VER=$(jq -r '.kernel_info.rust_version' toolchains.json)
           
+          # 调试输出
+          echo "DEBUG: RUST_VER from JSON = ${RUST_VER}"
+          
           echo "kernel_tag=${KERNEL_TAG}" >> $GITHUB_OUTPUT
           echo "kernel_url=${KERNEL_URL}" >> $GITHUB_OUTPUT
           echo "clang_url=${CLANG_URL}" >> $GITHUB_OUTPUT
@@ -58,9 +61,11 @@ jobs:
 
       - name: Process rust
         run: |
+          echo "DEBUG: rust_version from output = '${{ steps.config.outputs.rust_version }}'"
           TAG="${{ steps.config.outputs.clang_version }}"
           RUST_VER="${{ steps.config.outputs.rust_version }}"
           FILE="rust-${RUST_VER}.tar.gz"
+          echo "DEBUG: FILE = $FILE"
           
           if gh release view "$TAG" --repo yapixel/gki-build-assets --json assets -q ".assets[].name" | grep -q "$FILE"; then
             echo "$FILE already exists, skipping"
