@@ -19,7 +19,7 @@ jobs:
         uses: actions/checkout@v6
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6.2.0
         with:
           python-version: '3.10'
 
@@ -50,7 +50,7 @@ jobs:
               url = f"{base_url}/{repo}"
               return subprocess.check_output(["git", "ls-remote", url, rev]).decode().split()[0]
 
-          # 1. 锁定物理哈希
+          # 1. 物理定位：通过 Manifest 锁定 commit
           m_raw = fetch_raw("kernel/manifest", f"refs/heads/{tag}", "default.xml")
           if not m_raw: sys.exit(1)
           root = ET.fromstring(m_raw)
@@ -72,31 +72,39 @@ jobs:
                       "hash": get_hash(p.get('name'), p.get('revision') or def_rev)
                   }
 
-          # 2. 物理提取函数：加固版，支持 Makefile (VAR = VAL) 和 Constants (VAR=VAL)
+          # 2. 物理提取函数：绝对字符搬运，严防 .p1 截断
           def extract_truth(text, key):
-              text = text.replace('\r', '')
-              for line in text.splitlines():
+              if not text: return "UNKNOWN"
+              # 统一换行符，防止 CRLF 干扰
+              lines = text.replace('\r', '').split('\n')
+              for line in lines:
                   line = line.strip()
-                  # 同时兼容 "KEY=" 和 "KEY ="
-                  if line.startswith(f"{key}=") or line.startswith(f"{key} =") or line.startswith(f"{key}\t="):
+                  # 找到以 KEY= 开头的行
+                  if line.startswith(f"{key}=") or line.startswith(f"{key} ="):
+                      # 取等号右边，剥离注释、空格和引号
                       val = line.split('=', 1)[1].split('#')[0].strip()
-                      return val.replace('"', '').replace("'", "")
+                      return val.strip('"').strip("'")
               return "UNKNOWN"
 
           mk_text = fetch_raw(nodes['common']['repo'], nodes['common']['hash'], "Makefile")
           const_text = fetch_raw(nodes['common']['repo'], nodes['common']['hash'], "build.config.constants")
 
-          # 修正点：移除多余的 '.' 参数
-          real_ver = f"{extract_truth(mk_text, 'VERSION')}.{extract_truth(mk_text, 'PATCHLEVEL')}.{extract_truth(mk_text, 'SUBLEVEL')}"
+          # 物理抓取版本号
+          ver_v = extract_truth(mk_text, "VERSION")
+          ver_p = extract_truth(mk_text, "PATCHLEVEL")
+          ver_s = extract_truth(mk_text, "SUBLEVEL")
+          
+          real_ver = f"{ver_v}.{ver_p}.{ver_s}".replace("UNKNOWN", "0")
+          off_branch = extract_truth(const_text, "BRANCH")
           clang_v = extract_truth(const_text, "CLANG_VERSION")
           rust_v = extract_truth(const_text, "RUSTC_VERSION")
 
-          # 3. 构造输出
+          # 3. 构造 100% 物理对齐的 JSON
           result = {
               "manifest_tag": tag,
               "kernel_info": {
-                  "official_branch": extract_truth(const_text, "BRANCH"),
-                  "real_version": real_ver.replace('UNKNOWN', '0'),
+                  "official_branch": off_branch,
+                  "real_version": real_ver,
                   "clang_version": clang_v,
                   "rust_version": rust_v
               },
@@ -128,5 +136,5 @@ jobs:
           git config --local user.email "action@github.com"
           git config --local user.name "GitHub Action"
           git add toolchains.json
-          git commit -m "Sync: ${{ github.event.inputs.manifest_tag }}" || exit 0
+          git commit -m "Sync: ${{ github.event.inputs.manifest_tag }} (Rust: $(jq -r '.kernel_info.rust_version' toolchains.json))" || exit 0
           git push
