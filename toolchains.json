@@ -8,7 +8,7 @@
   },
   "artifacts": {
     "kernel": {
-      "revision": "android16-6.12-2025-06",
+      "revision": "common-android16-6.12-2025-06",
       "url": "https://android.googlesource.com/kernel/common/+archive/android16-6.12-2025-06.tar.gz"
     },
     "clang": {
