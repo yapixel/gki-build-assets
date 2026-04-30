@@ -17,22 +17,17 @@ jobs:
     name: Sync Toolchains
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout popsicle_ksu_workflow (for toolchains.json)
+      - name: Checkout repository
         uses: actions/checkout@v6
-        with:
-          repository: yapixel/popsicle_ksu_workflow
-          path: popsicle_config
-          ref: google
 
       - name: Read toolchains.json
         id: read_json
         run: |
-          if [ ! -f "popsicle_config/config/toolchains.json" ]; then
-            echo "Error: toolchains.json not found in popsicle_ksu_workflow/config/"
-            echo "Please add the file first"
+          if [ ! -f "config/toolchains.json" ]; then
+            echo "Error: config/toolchains.json not found"
             exit 1
           fi
-          echo "TOOLCHAINS=$(cat popsicle_config/config/toolchains.json | jq -c .)" >> $GITHUB_ENV
+          echo "TOOLCHAINS=$(cat config/toolchains.json | jq -c .)" >> $GITHUB_ENV
 
       - name: Sync each toolchain version
         run: |
