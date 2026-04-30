@@ -23,7 +23,6 @@ jobs:
         with:
           python-version: '3.10'
 
-      # 关键步骤：安装 requests 库，否则脚本无法发起 HTTP 请求
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
@@ -42,56 +41,77 @@ jobs:
           base_url = "https://android.googlesource.com"
 
           def fetch_raw(repo, commit, path):
+              """下载并解码 AOSP 文件，失败返回空字符串"""
               url = f"{base_url}/{repo}/+/{commit}/{path}?format=TEXT"
               try:
-                  # 物理请求：拿到 Base64 编码的原始文本
-                  r = requests.get(url, timeout=20)
-                  if r.status_code == 200:
-                      return base64.b64decode(r.text).decode('utf-8', errors='ignore')
-              except: pass
-              return ""
+                  r = requests.get(url, timeout=30)
+                  if r.status_code != 200:
+                      return ""
+                  text = r.text.strip()
+                  if not text:
+                      return ""
+                  # 简单校验是否为 base64 格式
+                  if not (text.startswith('PD94bWwg') or text.startswith('IyEg')):
+                      return ""
+                  return base64.b64decode(text).decode('utf-8', errors='ignore')
+              except Exception:
+                  return ""
 
-          # 1. 物理采样 Manifest
+          # 1. 获取 manifest
           m_raw = fetch_raw("kernel/manifest", f"refs/heads/{tag}", "default.xml")
           if not m_raw:
               print(f"CRITICAL: Manifest for {tag} not found.")
               sys.exit(1)
-          
+
           root = ET.fromstring(m_raw)
-          def_rev = root.find('default').get('revision') if root.find('default') is not None else ""
+          default_tag = root.find('default')
+          def_rev = default_tag.get('revision') if default_tag is not None else ""
 
           # 建立 path -> {repo, rev} 映射
-          project_map = {
-              p.get('path'): {
+          project_map = {}
+          for p in root.findall('project'):
+              path = p.get('path')
+              if not path:
+                  continue
+              project_map[path] = {
                   "repo": p.get('name'),
                   "rev": p.get('revision') or def_rev
-              } for p in root.findall('project') if p.get('path')
-          }
+              }
 
-          # 2. 物理提取函数：不加戏，不补全，只认等号右边
+          # 2. 提取 key=value
           def get_val(text, key):
               for line in text.splitlines():
                   line = line.strip()
+                  if not line or line.startswith('#'):
+                      continue
                   if line.startswith(f"{key}=") or line.startswith(f"{key} ="):
-                      # 拿到等号后的所有内容，去掉引号和注释，保留 .p1 等补丁后缀
                       val = line.split('=', 1)[1].split('#')[0].strip()
                       return val.strip('"').strip("'")
-              return "NOT_FOUND"
+              return ""
 
           common = project_map.get("common")
           if not common:
-              sys.exit("CRITICAL: 'common' project missing.")
+              print("CRITICAL: 'common' project missing.")
+              sys.exit(1)
 
           mk_text = fetch_raw(common['repo'], common['rev'], "Makefile")
           const_text = fetch_raw(common['repo'], common['rev'], "build.config.constants")
 
           rust_v = get_val(const_text, "RUSTC_VERSION")
           clang_v = get_val(const_text, "CLANG_VERSION")
+          branch = get_val(const_text, "BRANCH")
 
-          # 3. 构造输出
+          # 获取内核版本号
+          ver = get_val(mk_text, "VERSION")
+          patch = get_val(mk_text, "PATCHLEVEL")
+          sub = get_val(mk_text, "SUBLEVEL")
+          kernel_ver = f"{ver}.{patch}.{sub}" if sub else f"{ver}.{patch}"
+
+          # 3. 构造 artifact 下载信息
           def build_art(path, sub_path=""):
               item = project_map.get(path)
-              if not item: return {"revision": "MISSING", "url": ""}
+              if not item:
+                  return {"revision": "", "url": ""}
               rev = item['rev']
               return {
                   "revision": rev,
@@ -101,8 +121,8 @@ jobs:
           result = {
               "manifest_tag": tag,
               "kernel_info": {
-                  "official_branch": get_val(const_text, "BRANCH"),
-                  "real_version": f"{get_val(mk_text, 'VERSION')}.{get_val(mk_text, 'PATCHLEVEL')}.{get_val(mk_text, 'SUBLEVEL')}".replace("NOT_FOUND", "0"),
+                  "official_branch": branch,
+                  "real_version": kernel_ver,
                   "clang_version": clang_v,
                   "rust_version": rust_v
               },
@@ -116,12 +136,16 @@ jobs:
 
           with open('toolchains.json', 'w') as f:
               json.dump(result, f, indent=2)
+          print("Generated toolchains.json successfully.")
 
       - name: Commit and Push
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           cat toolchains.json
           git config --local user.email "action@github.com"
           git config --local user.name "GitHub Action"
+          git remote set-url origin https://x-access-token:${GITHUB_TOKEN}@github.com/${{ github.repository }}
           git add toolchains.json
-          git commit -m "Sync: ${{ github.event.inputs.manifest_tag }}" || exit 0
+          git commit -m "Sync: ${{ github.event.inputs.manifest_tag }}" || echo "No changes to commit"
           git push
