@@ -181,29 +181,28 @@ jobs:
           def build_art(path, sub_path=""):
               item = project_map.get(path)
               if not item:
-                  return {"revision": "", "url": ""}
-              rev = item['rev']
-              if path == "common":
-                  rev_display = tag
-              else:
-                  rev_display = rev
+                  return {"commit_hash": "", "source_branch": "", "url": ""}
               
+              rev = item['rev']  # 原始 revision（分支名或 tag）
+              
+              # 获取对应的 commit hash
               if path == "common":
-                  download_rev = common_hash
+                  commit_hash = common_hash
               elif path == "prebuilts/clang/host/linux-x86":
-                  download_rev = clang_hash
+                  commit_hash = clang_hash
               elif path == "prebuilts/rust":
-                  download_rev = rust_hash
+                  commit_hash = rust_hash
               elif path == "prebuilts/clang-tools":
-                  download_rev = tools_hash
+                  commit_hash = tools_hash
               elif path == "prebuilts/build-tools":
-                  download_rev = build_tools_hash
+                  commit_hash = build_tools_hash
               else:
-                  download_rev = rev
+                  commit_hash = rev
               
               return {
-                  "revision": rev_display,
-                  "url": f"{base_url}/{item['repo']}/+archive/{download_rev}{sub_path}.tar.gz"
+                  "source_branch": rev,
+                  "commit_hash": commit_hash,
+                  "url": f"{base_url}/{item['repo']}/+archive/{commit_hash}{sub_path}.tar.gz"
               }
           
           result = {
