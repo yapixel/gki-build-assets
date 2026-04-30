@@ -22,6 +22,10 @@
     "clang_tools": {
       "revision": "main-kernel-2025",
       "url": "https://android.googlesource.com/platform/prebuilts/clang-tools/+archive/c03d5bc912878cdcbdc38fcb003e94116b978956/linux-x86/bin.tar.gz"
+    },
+    "build_tools": {
+      "revision": "main-kernel-2025",
+      "url": "https://android.googlesource.com/platform/prebuilts/build-tools/+archive/574765b494f226284968a8d156437e4c932aad61.tar.gz"
     }
   }
 }
