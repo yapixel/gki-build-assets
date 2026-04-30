@@ -1,4 +1,4 @@
-name: AOSP Toolchain Sync (HEAD Mode)
+name: AOSP Toolchain Sync
 
 on:
   workflow_dispatch:
@@ -24,44 +24,66 @@ jobs:
           BRANCH="${{ github.event.inputs.branch }}"
           BASE="https://android.googlesource.com"
 
-          # 1. 物理抓取：直接抓取分支最顶端的文件
-          fetch_head() {
+          # 1. 抓取函数：还原文本流并清理回车符
+          fetch_raw() {
             curl -s "$BASE/$1/+/$BRANCH/$2?format=TEXT" | base64 -d | tr -d '\r'
           }
 
           # 2. 现场采样
-          fetch_head "kernel/common" "Makefile" > Makefile
-          fetch_head "kernel/common" "build.config.constants" > constants
+          fetch_raw "kernel/common" "Makefile" > Makefile
+          fetch_raw "kernel/common" "build.config.constants" > constants
 
-          # 3. Perl 强力提取
+          # 3. Perl 精准提取：确保不丢弃任何补丁后缀 (.p1 等)
           get_val() {
             perl -ne "print \$1 if /^\s*$1\s*=\s*['\"]?([^'\"#\s]+)/" "$2"
           }
 
           RUST_V=$(get_val "RUSTC_VERSION" "constants")
           CLANG_V=$(get_val "CLANG_VERSION" "constants")
+          OFF_BRANCH=$(get_val "BRANCH" "constants")
           
           V=$(get_val "VERSION" "Makefile")
           P=$(get_val "PATCHLEVEL" "Makefile")
           S=$(get_val "SUBLEVEL" "Makefile")
           KERNEL_V="${V}.${P}.${S}"
 
-          # 获取此时此刻分支的最新哈希
-          HEAD_HASH=$(git ls-remote "$BASE/kernel/common" "refs/heads/$BRANCH" | awk '{print $1}')
+          # 4. 补全仓库哈希定位
+          get_hash() {
+             git ls-remote "$BASE/$1" "refs/heads/main" | awk '{print $1}'
+          }
+          
+          COMMON_HASH=$(git ls-remote "$BASE/kernel/common" "refs/heads/$BRANCH" | awk '{print $1}')
+          CLANG_HASH=$(get_hash "platform/prebuilts/clang/host/linux-x86")
+          RUST_HASH=$(get_hash "platform/prebuilts/rust")
+          TOOLS_HASH=$(get_hash "platform/prebuilts/clang-tools")
 
-          # 4. 构造 JSON
+          # 5. 构造最终 JSON (包含所有缺失的 artifacts)
           cat <<EOF > toolchains.json
           {
             "manifest_tag": "HEAD-$BRANCH",
             "kernel_info": {
-              "official_branch": "$BRANCH",
+              "official_branch": "$OFF_BRANCH",
               "real_version": "$KERNEL_V",
               "clang_version": "$CLANG_V",
               "rust_version": "$RUST_V"
             },
             "artifacts": {
-              "kernel": { "revision": "$HEAD_HASH", "url": "$BASE/kernel/common/+archive/$HEAD_HASH.tar.gz" },
-              "rust": { "url": "$BASE/platform/prebuilts/rust/+archive/$(git ls-remote "$BASE/platform/prebuilts/rust" "refs/heads/main" | awk '{print $1}')/linux-x86/$RUST_V.tar.gz" }
+              "kernel": { 
+                "revision": "$COMMON_HASH", 
+                "url": "$BASE/kernel/common/+archive/$COMMON_HASH.tar.gz" 
+              },
+              "clang": { 
+                "revision": "$CLANG_HASH",
+                "url": "$BASE/platform/prebuilts/clang/host/linux-x86/+archive/$CLANG_HASH/clang-$CLANG_V.tar.gz" 
+              },
+              "rust": { 
+                "revision": "$RUST_HASH",
+                "url": "$BASE/platform/prebuilts/rust/+archive/$RUST_HASH/linux-x86/$RUST_V.tar.gz" 
+              },
+              "clang_tools": { 
+                "revision": "$TOOLS_HASH",
+                "url": "$BASE/platform/prebuilts/clang-tools/+archive/$TOOLS_HASH/linux-x86/bin.tar.gz" 
+              }
             }
           }
           EOF
@@ -69,7 +91,6 @@ jobs:
       - name: Commit and Push
         run: |
           RUST_V=$(jq -r '.kernel_info.rust_version' toolchains.json)
-          echo "Current Branch Rust Version: $RUST_V"
           git config --local user.email "action@github.com"
           git config --local user.name "GitHub Action"
           git add toolchains.json
