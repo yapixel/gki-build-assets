@@ -1,0 +1,116 @@
+name: Download and Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      run_id:
+        description: 'Run ID of the parse-manifest workflow'
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+env:
+  ASSET_REPO: yapixel/gki-build-assets
+  GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+jobs:
+  download:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: sudo apt-get update && sudo apt-get install -y aria2 jq
+
+      - name: Download toolchain-config artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: toolchain-json
+          run-id: ${{ inputs.run_id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Download All Assets Parallel
+        id: download
+        run: |
+          # 从 JSON 提取所有 URL
+          K_URL=$(jq -r '.kernel.url' toolchains.json)
+          C_URL=$(jq -r '.clang.url' toolchains.json)
+          R_URL=$(jq -r '.rust.url' toolchains.json)
+          T_URL=$(jq -r '.clang_tools.url' toolchains.json)
+          K_TAG=$(jq -r '.kernel_tag' toolchains.json)
+          
+          # 创建 aria2 下载列表
+          cat <<EOF > download_list.txt
+          $K_URL
+            out=kernel.tar.gz
+          $C_URL
+            out=clang.tar.gz
+          $R_URL
+            out=rust.tar.gz
+          $T_URL
+            out=clang-tools.tar.gz
+          EOF
+          
+          echo "Starting parallel download..."
+          aria2c -i download_list.txt -s16 -x16 -k1M --download-result=hide --console-log-level=error
+          
+          # 验证文件大小
+          for f in kernel.tar.gz clang.tar.gz rust.tar.gz clang-tools.tar.gz; do
+            if [ ! -s "$f" ]; then echo "Error: $f is empty"; exit 1; fi
+          done
+          
+          echo "kernel_tag=$K_TAG" >> $GITHUB_OUTPUT
+
+      - name: Extract Clang Build ID
+        id: clang_info
+        run: |
+          mkdir -p clang_temp
+          # 只解压版本信息相关的文本或特定二进制
+          tar -tf clang.tar.gz | grep 'clang_source_info.md' | xargs tar -xzf clang.tar.gz -C clang_temp --strip-components=1 || true
+          
+          # 尝试从版本文本中提取 r536225 格式
+          if [ -f "clang_temp/clang_source_info.md" ]; then
+             CLANG_VER=$(grep -oP 'r[0-9]+[a-z]?' clang_temp/clang_source_info.md | head -1)
+          fi
+          
+          # 如果没找到，退回到解压二进制的方法
+          if [ -z "$CLANG_VER" ]; then
+             tar -xzf clang.tar.gz --wildcards '*/bin/clang' --strip-components=2
+             chmod +x bin/clang
+             CLANG_VER=$(./bin/clang --version | grep -oP 'based on \Kr[0-9]+[a-z]?' | head -1)
+          fi
+          
+          echo "clang_version=$CLANG_VER" >> $GITHUB_OUTPUT
+          echo "Detected Clang Version: $CLANG_VER"
+
+      - name: Release Toolchain Assets
+        run: |
+          TAG="${{ steps.clang_info.outputs.clang_version }}"
+          
+          # 检查 Release 是否存在
+          if ! gh release view "$TAG" -R $ASSET_REPO &>/dev/null; then
+            gh release create "$TAG" -R $ASSET_REPO --title "$TAG" --notes "Toolchain prebuilts for $TAG"
+          fi
+          
+          # 并行上传工具链资产
+          gh release upload "$TAG" clang.tar.gz rust.tar.gz clang-tools.tar.gz -R $ASSET_REPO --clobber
+
+      - name: Release Kernel Source
+        run: |
+          K_TAG="${{ steps.download.outputs.kernel_tag }}"
+          
+          # 对于内核源码，通常建议删除旧的重建以保持干净
+          if gh release view "$K_TAG" -R $ASSET_REPO &>/dev/null; then
+            gh release delete "$K_TAG" -R $ASSET_REPO --yes
+          fi
+          
+          gh release create "$K_TAG" -R $ASSET_REPO --title "$K_TAG" --notes "Kernel source and config for $K_TAG"
+          gh release upload "$K_TAG" kernel.tar.gz toolchains.json -R $ASSET_REPO --clobber
+
+      - name: Cleanup
+        if: always()
+        run: |
+          rm -rf *.tar.gz *.json download_list.txt clang_temp bin
