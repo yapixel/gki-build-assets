@@ -36,13 +36,23 @@ jobs:
           import base64
           import json
           import sys
+          import re
 
           tag = "${{ github.event.inputs.manifest_tag }}"
           base_url = "https://android.googlesource.com"
 
           def fetch_raw(repo, commit, path):
-              """下载并解码 AOSP 文件，失败返回空字符串"""
-              url = f"{base_url}/{repo}/+/{commit}/{path}?format=TEXT"
+              """获取 AOSP 文件内容，支持 commit hash、tag、branch"""
+              if not commit or not path:
+                  return ""
+              
+              # 判断是否为完整的 40 位 commit hash
+              if re.fullmatch(r'[0-9a-f]{40}', commit):
+                  url = f"{base_url}/{repo}/+/{commit}/{path}?format=TEXT"
+              else:
+                  # 尝试作为 tag 获取
+                  url = f"{base_url}/{repo}/+/refs/tags/{commit}/{path}?format=TEXT"
+                  
               try:
                   r = requests.get(url, timeout=30)
                   if r.status_code != 200:
@@ -50,11 +60,12 @@ jobs:
                   text = r.text.strip()
                   if not text:
                       return ""
-                  # 简单校验是否为 base64 格式
+                  # 简单校验是否为 base64 格式 (XML 或脚本通常以 PD94bWwg 或 IyEg 开头)
                   if not (text.startswith('PD94bWwg') or text.startswith('IyEg')):
                       return ""
                   return base64.b64decode(text).decode('utf-8', errors='ignore')
-              except Exception:
+              except Exception as e:
+                  print(f"Fetch error for {url}: {e}")
                   return ""
 
           # 1. 获取 manifest
@@ -113,8 +124,13 @@ jobs:
               if not item:
                   return {"revision": "", "url": ""}
               rev = item['rev']
+              # 对于 kernel，使用 tag 作为 revision 标识
+              if path == "common":
+                  rev_display = tag
+              else:
+                  rev_display = rev
               return {
-                  "revision": rev,
+                  "revision": rev_display,
                   "url": f"{base_url}/{item['repo']}/+archive/{rev}{sub_path}.tar.gz"
               }
 
