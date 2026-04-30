@@ -1,10 +1,10 @@
 {
   "manifest_tag": "common-android16-6.12-2025-06",
   "kernel_info": {
-    "official_branch": "android16-6.12",
-    "real_version": "6.12.23",
-    "clang_version": "r536225",
-    "rust_version": "1.82.0"
+    "official_branch": "",
+    "real_version": ".",
+    "clang_version": "",
+    "rust_version": ""
   },
   "artifacts": {
     "kernel": {
@@ -13,11 +13,11 @@
     },
     "clang": {
       "revision": "main-kernel-2025",
-      "url": "https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/main-kernel-2025/clang-r536225.tar.gz"
+      "url": "https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/main-kernel-2025/clang-.tar.gz"
     },
     "rust": {
       "revision": "main-kernel-2025",
-      "url": "https://android.googlesource.com/platform/prebuilts/rust/+archive/main-kernel-2025/linux-x86/1.82.0.tar.gz"
+      "url": "https://android.googlesource.com/platform/prebuilts/rust/+archive/main-kernel-2025/linux-x86/.tar.gz"
     },
     "clang_tools": {
       "revision": "main-kernel-2025",
