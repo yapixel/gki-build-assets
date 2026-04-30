@@ -1,4 +1,4 @@
-name: AOSP Toolchain Sync (Final Logic)
+name: AOSP Toolchain Sync
 
 on:
   workflow_dispatch:
@@ -26,7 +26,7 @@ jobs:
       - name: Install Dependencies
         run: pip install requests
 
-      - name: Resolve and Generate
+      - name: Raw Physical Extraction
         shell: python
         run: |
           import xml.etree.ElementTree as ET
@@ -41,70 +41,70 @@ jobs:
           def fetch_raw(repo, commit, path):
               url = f"{base_url}/{repo}/+/{commit}/{path}?format=TEXT"
               try:
-                  r = requests.get(url, timeout=15)
+                  r = requests.get(url, timeout=20)
                   if r.status_code == 200:
                       return base64.b64decode(r.text).decode('utf-8', errors='ignore')
-              except Exception:
-                  pass
+              except: pass
               return ""
 
-          # 1. 物理解析 Manifest (这是底线，绝不改用正则)
+          # 1. 物理解析 Manifest：杜绝 Regex 导致的路径解析失败
           m_raw = fetch_raw("kernel/manifest", f"refs/heads/{tag}", "default.xml")
           if not m_raw:
-              sys.exit(f"CRITICAL: Manifest for {tag} is missing from Google servers.")
+              print(f"FAILED: Cannot find manifest for {tag}")
+              sys.exit(1)
           
           root = ET.fromstring(m_raw)
           def_rev = root.find('default').get('revision') if root.find('default') is not None else ""
 
-          project_map = {}
-          for p in root.findall('project'):
-              path = p.get('path')
-              if path:
-                  project_map[path] = {
-                      "repo": p.get('name'),
-                      "rev": p.get('revision') or def_rev
-                  }
+          # 建立 path -> {repo, rev} 的精确映射
+          project_map = {
+              p.get('path'): {
+                  "repo": p.get('name'),
+                  "rev": p.get('revision') or def_rev
+              } for p in root.findall('project') if p.get('path')
+          }
 
-          # 2. 提取器：物理切割，拒绝截断
-          def extract_val(text, key):
+          # 2. 物理提取器：只要等号右边有字符，一个字节都不丢
+          def get_val(text, key):
               for line in text.splitlines():
                   line = line.strip()
                   if line.startswith(f"{key}=") or line.startswith(f"{key} ="):
+                      # 剥离等号后的引号、注释和空白，保留补丁后缀如 .p1
                       val = line.split('=', 1)[1].split('#')[0].strip()
-                      return val.replace('"', '').replace("'", "")
+                      return val.strip('"').strip("'")
               return "UNKNOWN"
 
           common = project_map.get("common")
-          if not common: sys.exit("CRITICAL: 'common' path missing in manifest.")
-          
+          if not common: sys.exit("FAILED: 'common' path missing in manifest")
+
           mk_text = fetch_raw(common['repo'], common['rev'], "Makefile")
           const_text = fetch_raw(common['repo'], common['rev'], "build.config.constants")
 
-          rust_v = extract_val(const_text, "RUSTC_VERSION")
-          clang_v = extract_val(const_text, "CLANG_VERSION")
-
-          # 3. 构造 Artifacts (基于解析出的哈希)
-          def get_art(path, sub_path=""):
+          # 3. 构造 Artifact：物理哈希对齐 URL
+          def build_art(path, sub_path=""):
               item = project_map.get(path)
-              if not item: return {"revision": "NOT_FOUND", "url": "NOT_FOUND"}
+              if not item: return {"revision": "EMPTY", "url": ""}
               return {
                   "revision": item['rev'],
                   "url": f"{base_url}/{item['repo']}/+archive/{item['rev']}{sub_path}.tar.gz"
               }
 
+          rust_v = get_val(const_text, "RUSTC_VERSION")
+          clang_v = get_val(const_text, "CLANG_VERSION")
+
           result = {
               "manifest_tag": tag,
               "kernel_info": {
-                  "official_branch": extract_val(const_text, "BRANCH"),
-                  "real_version": f"{extract_val(mk_text, 'VERSION')}.{extract_val(mk_text, 'PATCHLEVEL')}.{extract_val(mk_text, 'SUBLEVEL')}".replace("UNKNOWN", "0"),
+                  "official_branch": get_val(const_text, "BRANCH"),
+                  "real_version": f"{get_val(mk_text, 'VERSION')}.{get_val(mk_text, 'PATCHLEVEL')}.{get_val(mk_text, 'SUBLEVEL')}".replace("UNKNOWN", "0"),
                   "clang_version": clang_v,
                   "rust_version": rust_v
               },
               "artifacts": {
-                  "kernel": get_art("common"),
-                  "clang": get_art("prebuilts/clang/host/linux-x86", f"/clang-{clang_v}"),
-                  "rust": get_art("prebuilts/rust", f"/linux-x86/{rust_v}"),
-                  "clang_tools": get_art("prebuilts/clang-tools", "/linux-x86/bin")
+                  "kernel": build_art("common"),
+                  "clang": build_art("prebuilts/clang/host/linux-x86", f"/clang-{clang_v}"),
+                  "rust": build_art("prebuilts/rust", f"/linux-x86/{rust_v}"),
+                  "clang_tools": build_art("prebuilts/clang-tools", "/linux-x86/bin")
               }
           }
 
@@ -113,6 +113,7 @@ jobs:
 
       - name: Commit and Push
         run: |
+          cat toolchains.json
           git config --local user.email "action@github.com"
           git config --local user.name "GitHub Action"
           git add toolchains.json
