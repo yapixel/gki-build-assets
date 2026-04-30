@@ -1,14 +1,13 @@
 {
-  "manifest_tag": "common-android16-6.12-2025-06",
+  "manifest_tag": "HEAD-android16-6.12",
   "kernel_info": {
     "official_branch": "android16-6.12",
-    "real_version": "6.12.23",
+    "real_version": "6.12.77",
     "clang_version": "r536225",
-    "rust_version": "1.82.0"
+    "rust_version": "1.82.0.p1"
   },
   "artifacts": {
-    "kernel": { "revision": "android16-6.12-2025-06", "url": "https://android.googlesource.com/kernel/common/+archive/android16-6.12-2025-06.tar.gz" },
-    "clang": { "url": "https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/70a12c4fe88940ab2b0e6d763492dffa2f07e15a/clang-r536225.tar.gz" },
-    "rust": { "url": "https://android.googlesource.com/platform/prebuilts/rust/+archive/b9c747ff3d3c30c2014b6f94f8599415010ac37f/linux-x86/1.82.0.tar.gz" }
+    "kernel": { "revision": "c24e8b63076ebc75e83ec3182e9ec9075eb667ef", "url": "https://android.googlesource.com/kernel/common/+archive/c24e8b63076ebc75e83ec3182e9ec9075eb667ef.tar.gz" },
+    "rust": { "url": "https://android.googlesource.com/platform/prebuilts/rust/+archive/b9c747ff3d3c30c2014b6f94f8599415010ac37f/linux-x86/1.82.0.p1.tar.gz" }
   }
 }
