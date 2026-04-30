@@ -1,4 +1,4 @@
-name: AOSP Toolchain Sync (Zero-Hardcode)
+name: AOSP Toolchain Sync
 
 on:
   workflow_dispatch:
@@ -7,6 +7,9 @@ on:
         description: 'AOSP Manifest Tag'
         required: true
         default: 'common-android16-6.12-2025-06'
+permissions:
+  contents: write
+  pull-requests: write
 
 jobs:
   sync:
