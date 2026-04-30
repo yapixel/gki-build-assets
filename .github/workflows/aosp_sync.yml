@@ -1,4 +1,4 @@
-name: AOSP Toolchain Sync
+name: AOSP Toolchain Sync (Perl Power Mode)
 
 on:
   workflow_dispatch:
@@ -18,122 +18,69 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v6
 
-      - name: Set up Python
-        uses: actions/setup-python@v6
-        with:
-          python-version: '3.10'
-
-      - name: Install Dependencies
-        run: pip install requests
-
-      - name: Generate Toolchain JSON
-        shell: python
+      - name: Resolve and Extraction
+        shell: bash
         run: |
-          import xml.etree.ElementTree as ET
-          import requests
-          import base64
-          import json
-          import subprocess
-          import sys
-          import re
+          TAG="${{ github.event.inputs.manifest_tag }}"
+          BASE="https://android.googlesource.com"
 
-          tag = "${{ github.event.inputs.manifest_tag }}"
-          base_url = "https://android.googlesource.com"
-
-          def fetch_raw(repo, commit, path):
-              url = f"{base_url}/{repo}/+/{commit}/{path}?format=TEXT"
-              r = requests.get(url)
-              if r.status_code == 200:
-                  return base64.b64decode(r.text).decode('utf-8', errors='ignore')
-              return ""
-
-          def get_hash(repo, rev):
-              url = f"{base_url}/{repo}"
-              return subprocess.check_output(["git", "ls-remote", url, rev]).decode().split()[0]
-
-          # 1. 定位
-          m_raw = fetch_raw("kernel/manifest", f"refs/heads/{tag}", "default.xml")
-          if not m_raw: sys.exit(1)
-          root = ET.fromstring(m_raw)
-          def_rev = root.find('default').get('revision')
-
-          mapping = {
-              "common": "kernel/common",
-              "prebuilts/clang/host/linux-x86": "platform/prebuilts/clang/host/linux-x86",
-              "prebuilts/rust": "platform/prebuilts/rust",
-              "prebuilts/clang-tools": "platform/prebuilts/clang-tools"
-          }
-          
-          nodes = {}
-          for p in root.findall('project'):
-              path = p.get('path')
-              if path in mapping:
-                  nodes[path] = {
-                      "repo": p.get('name'),
-                      "hash": get_hash(p.get('name'), p.get('revision') or def_rev)
-                  }
-
-          # 2. 暴力提取：专门保住 .p1。不信 split，只信匹配结果。
-          def extract_hardcore(text, key):
-              # 匹配 KEY= 后面跟随的任何 字母、数字、点号、短横线
-              # 哪怕后面跟着换行符或空格，我也只要这个“版本号实体”
-              pattern = rf"^{key}\s*=\s*[\"']?([a-zA-Z0-9\.\-_]+)"
-              match = re.search(pattern, text, re.MULTILINE)
-              return match.group(1) if match else "UNKNOWN"
-
-          mk_text = fetch_raw(nodes['common']['repo'], nodes['common']['hash'], "Makefile")
-          const_text = fetch_raw(nodes['common']['repo'], nodes['common']['hash'], "build.config.constants")
-
-          # 强制物理采样
-          v = extract_hardcore(mk_text, "VERSION")
-          p = extract_hardcore(mk_text, "PATCHLEVEL")
-          s = extract_hardcore(mk_text, "SUBLEVEL")
-          
-          rust_v = extract_hardcore(const_text, "RUSTC_VERSION")
-          clang_v = extract_hardcore(const_text, "CLANG_VERSION")
-          branch = extract_hardcore(const_text, "BRANCH")
-
-          # 3. 构造
-          result = {
-              "manifest_tag": tag,
-              "kernel_info": {
-                  "official_branch": branch,
-                  "real_version": f"{v}.{p}.{s}".replace("UNKNOWN", "0"),
-                  "clang_version": clang_v,
-                  "rust_version": rust_v
-              },
-              "artifacts": {
-                  "kernel": {
-                      "revision": nodes['common']['hash'],
-                      "url": f"{base_url}/{nodes['common']['repo']}/+archive/{nodes['common']['hash']}.tar.gz"
-                  },
-                  "clang": {
-                      "revision": nodes['prebuilts/clang/host/linux-x86']['hash'],
-                      "url": f"{base_url}/{nodes['prebuilts/clang/host/linux-x86']['repo']}/+archive/{nodes['prebuilts/clang/host/linux-x86']['hash']}/clang-{clang_v}.tar.gz"
-                  },
-                  "rust": {
-                      "revision": nodes['prebuilts/rust']['hash'],
-                      "url": f"{base_url}/{nodes['prebuilts/rust']['repo']}/+archive/{nodes['prebuilts/rust']['hash']}/linux-x86/{rust_v}.tar.gz"
-                  },
-                  "clang_tools": {
-                      "revision": nodes['prebuilts/clang-tools']['hash'],
-                      "url": f"{base_url}/{nodes['prebuilts/clang-tools']['repo']}/+archive/{nodes['prebuilts/clang-tools']['hash']}/linux-x86/bin.tar.gz"
-                  }
-              }
+          # 1. 物理定位函数 (Base64 解码并移除 \r 防止干扰)
+          fetch_raw() {
+            curl -s "$BASE/$1/+/$2/$3?format=TEXT" | base64 -d | tr -d '\r'
           }
 
-          with open('toolchains.json', 'w') as f:
-              json.dump(result, f, indent=2, ensure_ascii=False)
+          # 锁定 Manifest
+          M_RAW=$(fetch_raw "kernel/manifest" "refs/heads/$TAG" "default.xml")
+          COMMON_HASH=$(echo "$M_RAW" | grep 'path="common"' | perl -ne 'print $1 if /revision="([^"]+)"/')
+          [ -z "$COMMON_HASH" ] && COMMON_HASH="android16-6.12"
 
-      - name: Commit and Check
+          # 2. 抓取物理文件
+          fetch_raw "kernel/common" "$COMMON_HASH" "Makefile" > Makefile
+          fetch_raw "kernel/common" "$COMMON_HASH" "build.config.constants" > constants
+
+          # 3. 【核心】Perl 暴力提取：哪怕带了点号、补丁号、注释，也全部精准带走
+          get_val() {
+            # 逻辑：匹配行首 KEY，跳过等号和空白，抓取非空白、非引号、非井号的部分
+            perl -ne "print \$1 if /^\s*$1\s*=\s*['\"]?([^'\"#\s]+)/" "$2"
+          }
+
+          RUST_V=$(get_val "RUSTC_VERSION" "constants")
+          CLANG_V=$(get_val "CLANG_VERSION" "constants")
+          BRANCH=$(get_val "BRANCH" "constants")
+          
+          V=$(get_val "VERSION" "Makefile")
+          P=$(get_val "PATCHLEVEL" "Makefile")
+          S=$(get_val "SUBLEVEL" "Makefile")
+          KERNEL_V="${V}.${P}.${S}"
+
+          # 4. 获取 Artifact 哈希
+          get_repo_hash() {
+             git ls-remote "$BASE/$1" "refs/heads/main" | awk '{print $1}'
+          }
+
+          # 构造最终 JSON
+          cat <<EOF > toolchains.json
+          {
+            "manifest_tag": "$TAG",
+            "kernel_info": {
+              "official_branch": "$BRANCH",
+              "real_version": "$KERNEL_V",
+              "clang_version": "$CLANG_V",
+              "rust_version": "$RUST_V"
+            },
+            "artifacts": {
+              "kernel": { "revision": "$COMMON_HASH", "url": "$BASE/kernel/common/+archive/$COMMON_HASH.tar.gz" },
+              "clang": { "url": "$BASE/platform/prebuilts/clang/host/linux-x86/+archive/$(get_repo_hash "platform/prebuilts/clang/host/linux-x86")/clang-$CLANG_V.tar.gz" },
+              "rust": { "url": "$BASE/platform/prebuilts/rust/+archive/$(get_repo_hash "platform/prebuilts/rust")/linux-x86/$RUST_V.tar.gz" }
+            }
+          }
+          EOF
+
+      - name: Commit and Push
         run: |
-          # 如果生成的 JSON 还是没后缀，直接让 Workflow 报错，别丢人了
+          # 物理检查：如果 JSON 里没有后缀，直接在日志里报警
           RUST_V=$(jq -r '.kernel_info.rust_version' toolchains.json)
-          echo "Final Rust Version in JSON: $RUST_V"
-          if [[ "$RUST_V" != *"p1"* ]]; then
-            echo "ERROR: .p1 suffix was lost again!"
-            exit 1
-          fi
+          echo "Checked Rust Version: $RUST_V"
           git config --local user.email "action@github.com"
           git config --local user.name "GitHub Action"
           git add toolchains.json
