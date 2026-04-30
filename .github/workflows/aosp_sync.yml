@@ -1,53 +1,126 @@
-name: AOSP Toolchain Real-Time Sync
+name: AOSP Toolchain Sync
 
 on:
   workflow_dispatch:
     inputs:
       manifest_tag:
-        description: 'Target Manifest Tag (e.g., common-android16-6.12-2025-06)'
+        description: 'AOSP Manifest Tag'
         required: true
         default: 'common-android16-6.12-2025-06'
 
+permissions:
+  contents: write
+
 jobs:
-  resolve-truth:
+  sync:
     runs-on: ubuntu-latest
     steps:
-      - name: Fetch and Resolve
+      - name: Checkout
+        uses: actions/checkout@v
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: Resolve Environment
         shell: python
         run: |
-          import requests, base64, re, json, subprocess
+          import xml.etree.ElementTree as ET
+          import requests
+          import base64
+          import re
+          import json
+          import subprocess
 
           tag = "${{ github.event.inputs.manifest_tag }}"
-          base = "https://android.googlesource.com"
+          base_url = "https://android.googlesource.com"
 
-          def fetch_txt(repo, rev, path):
-              url = f"{base}/{repo}/+/{rev}/{path}?format=TEXT"
+          def fetch_raw(repo, commit, path):
+              url = f"{base_url}/{repo}/+/{commit}/{path}?format=TEXT"
               r = requests.get(url)
-              return base64.b64decode(r.text).decode('utf-8') if r.status_code == 200 else ""
+              if r.status_code == 200:
+                  return base64.b64decode(r.text).decode('utf-8', errors='ignore')
+              return ""
 
           def get_hash(repo, rev):
-              url = f"{base}/{repo}"
+              url = f"{base_url}/{repo}"
               return subprocess.check_output(["git", "ls-remote", url, rev]).decode().split()[0]
 
-          # 1. 解析 Manifest 锁定哈希 (2025-06 节点)
-          m_xml = fetch_txt("kernel/manifest", f"refs/heads/{tag}", "default.xml")
-          # 这里通过正则或 XML 解析拿到 common 仓库的 revision 
-          # 假设已经拿到了 kernel_rev (对应 android16-6.12)
-          kernel_hash = get_hash("kernel/common", "android16-6.12") 
+          # 1. 解析 Manifest 锁定各仓库哈希
+          m_raw = fetch_raw("kernel/manifest", f"refs/heads/{tag}", "default.xml")
+          root = ET.fromstring(m_raw)
+          def_rev = root.find('default').get('revision')
 
-          # 2. 远程读取真理 (Makefile & Constants)
-          makefile = fetch_txt("kernel/common", kernel_hash, "Makefile")
-          constants = fetch_txt("kernel/common", kernel_hash, "build.config.constants")
+          # 这里的 path 必须和 AOSP 结构物理对齐
+          mapping = {
+              "common": "kernel/common",
+              "prebuilts/clang/host/linux-x86": "platform/prebuilts/clang/host/linux-x86",
+              "prebuilts/rust": "platform/prebuilts/rust",
+              "prebuilts/clang-tools": "platform/prebuilts/clang-tools"
+          }
+          
+          nodes = {}
+          for p in root.findall('project'):
+              path = p.get('path')
+              if path in mapping:
+                  nodes[path] = {
+                      "repo": p.get('name'),
+                      "hash": get_hash(p.get('name'), p.get('revision') or def_rev)
+                  }
 
-          # --- 提取内核物理版本 (6.12.x) ---
-          def m_val(k, t): return re.search(rf'^{k}\s*=\s*(\d+)', t, re.M).group(1)
-          real_ver = f"{m_val('VERSION', makefile)}.{m_val('PATCHLEVEL', makefile)}.{m_val('SUBLEVEL', makefile)}"
+          # 2. 远程读取 Makefile (获取 6.12.x)
+          mk_text = fetch_raw(nodes['common']['repo'], nodes['common']['hash'], "Makefile")
+          def get_mk(key):
+              return re.search(rf'^{key}\s*=\s*(\d+)', mk_text, re.M).group(1)
+          
+          real_ver = f"{get_mk('VERSION')}.{get_mk('PATCHLEVEL')}.{get_mk('SUBLEVEL')}"
 
-          # --- 提取工具链契约 (rXXXX, 1.x.x.p1) ---
-          def c_val(k, t): return re.search(rf'^{k}=["\']?([^\s"\']+)["\']?$', t, re.M).group(1)
-          off_branch = c_val("BRANCH", constants)
-          clang_v = c_val("CLANG_VERSION", constants)
-          rust_v = c_val("RUSTC_VERSION", constants)
+          # 3. 远程读取 Constants (获取构建契约)
+          const_text = fetch_raw(nodes['common']['repo'], nodes['common']['hash'], "build.config.constants")
+          def get_const(key):
+              # 严禁修剪！匹配所有非空、非引号字符，保留 .p1 等所有后缀
+              match = re.search(rf'^{key}=["\']?([^\s"\']+)["\']?$', const_text, re.M)
+              return match.group(1) if match else "unknown"
 
-          # 3. 构造 100% 物理对齐的 JSON
-          # ... 此处生成 JSON 逻辑与之前一致，关键是 rust_v 绝不修剪 ...
+          off_branch = get_const("BRANCH")
+          clang_v = get_const("CLANG_VERSION")
+          rust_v = get_const("RUSTC_VERSION")
+
+          # 4. 生成最终对齐文件
+          time_stamp = "-".join(tag.split('-')[-2:])
+          result = {
+              "manifest_tag": tag,
+              "kernel_info": {
+                  "official_branch": off_branch,
+                  "real_version": real_ver,
+                  "clang_version": clang_v,
+                  "rust_version": rust_v
+              },
+              "artifacts": {
+                  "kernel": {
+                      "revision": nodes['common']['hash'],
+                      "url": f"{base_url}/{nodes['common']['repo']}/+archive/{nodes['common']['hash']}.tar.gz",
+                      "download_name": f"{off_branch}-{time_stamp}.tar.gz"
+                  },
+                  "clang": {
+                      "revision": nodes['prebuilts/clang/host/linux-x86']['hash'],
+                      "url": f"{base_url}/{nodes['prebuilts/clang/host/linux-x86']['repo']}/+archive/{nodes['prebuilts/clang/host/linux-x86']['hash']}/clang-{clang_v}.tar.gz"
+                  },
+                  "rust": {
+                      "revision": nodes['prebuilts/rust']['hash'],
+                      "url": f"{base_url}/{nodes['prebuilts/rust']['repo']}/+archive/{nodes['prebuilts/rust']['hash']}/linux-x86/{rust_v}.tar.gz"
+                  }
+              }
+          }
+
+          with open('toolchains.json', 'w') as f:
+              json.dump(result, f, indent=2)
+
+      - name: Commit result
+        run: |
+          git config --local user.email "action@github.com"
+          git config --local user.name "GitHub Action"
+          git add toolchains.json
+          git commit -m "Sync: ${ { github.event.inputs.manifest_tag } }" || exit 0
+          git push
