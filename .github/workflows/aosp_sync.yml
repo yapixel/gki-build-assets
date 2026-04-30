@@ -26,17 +26,17 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install requests
+          pip install requests lxml
 
       - name: Raw Logic Extraction
         shell: python
         run: |
-          import xml.etree.ElementTree as ET
           import requests
           import base64
           import json
           import sys
           import re
+          from lxml import etree
 
           tag = "${{ github.event.inputs.manifest_tag }}"
           base_url = "https://android.googlesource.com"
@@ -49,10 +49,29 @@ jobs:
               # 判断是否为完整的 40 位 commit hash
               if re.fullmatch(r'[0-9a-f]{40}', commit):
                   url = f"{base_url}/{repo}/+/{commit}/{path}?format=TEXT"
-              else:
-                  # 分支或 tag 直接使用 refs/heads
-                  url = f"{base_url}/{repo}/+/refs/heads/{commit}/{path}?format=TEXT"
-                  
+                  try:
+                      r = requests.get(url, timeout=30)
+                      if r.status_code == 200:
+                          text = r.text.strip()
+                          if text and (text.startswith('PD94bWwg') or text.startswith('IyEg')):
+                              return base64.b64decode(text).decode('utf-8', errors='ignore')
+                  except:
+                      pass
+                  return ""
+              
+              # 尝试作为 tag 获取
+              url = f"{base_url}/{repo}/+/refs/tags/{commit}/{path}?format=TEXT"
+              try:
+                  r = requests.get(url, timeout=30)
+                  if r.status_code == 200:
+                      text = r.text.strip()
+                      if text and (text.startswith('PD94bWwg') or text.startswith('IyEg')):
+                          return base64.b64decode(text).decode('utf-8', errors='ignore')
+              except:
+                  pass
+              
+              # 尝试作为分支获取
+              url = f"{base_url}/{repo}/+/refs/heads/{commit}/{path}?format=TEXT"
               try:
                   r = requests.get(url, timeout=30)
                   if r.status_code != 200:
@@ -60,7 +79,6 @@ jobs:
                   text = r.text.strip()
                   if not text:
                       return ""
-                  # 校验是否为 base64 格式
                   if not (text.startswith('PD94bWwg') or text.startswith('IyEg')):
                       return ""
                   return base64.b64decode(text).decode('utf-8', errors='ignore')
@@ -74,9 +92,11 @@ jobs:
               print(f"CRITICAL: Manifest for {tag} not found.")
               sys.exit(1)
 
-          root = ET.fromstring(m_raw)
-          default_tag = root.find('default')
-          def_rev = default_tag.get('revision') if default_tag is not None else ""
+          # 使用 lxml 解析 manifest
+          root = etree.fromstring(m_raw.encode('utf-8'))
+          
+          default_elem = root.find('default')
+          def_rev = default_elem.get('revision') if default_elem is not None else ""
 
           # 建立 path -> {repo, rev} 映射
           project_map = {}
@@ -112,7 +132,6 @@ jobs:
           clang_v = get_val(const_text, "CLANG_VERSION")
           branch = get_val(const_text, "BRANCH")
 
-          # 获取内核版本号
           ver = get_val(mk_text, "VERSION")
           patch = get_val(mk_text, "PATCHLEVEL")
           sub = get_val(mk_text, "SUBLEVEL")
@@ -124,7 +143,6 @@ jobs:
               if not item:
                   return {"revision": "", "url": ""}
               rev = item['rev']
-              # 对于 kernel，使用 tag 作为 revision 标识
               if path == "common":
                   rev_display = tag
               else:
