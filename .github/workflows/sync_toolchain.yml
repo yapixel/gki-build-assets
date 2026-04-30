@@ -1,21 +1,39 @@
 name: Sync Android 16 Toolchain
 
 on:
-  workflow_dispatch: # 手动触发
+  workflow_dispatch: # 手动触发测试
   schedule:
-    - cron: '0 0 * * 0' # 每周日自动同步一次
+    - cron: '0 0 * * 0' # 每周日午夜自动同步更新
 
 jobs:
-  generate-json:
+  update-config:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write # 赋予 Actions 提交代码到仓库的权限
+
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
 
-      - name: Download Official Manifest
+      - name: Download and Verify Manifest
         run: |
-          # 下载你指定的 2025-06 锁定版本清单
-          curl -Lo manifest.xml https://android.googlesource.com/kernel/manifest/+/refs/heads/common-android16-6.12-2025-06/default.xml?format=TEXT | base64 -d > manifest.xml
+          # 定义目标清单 URL (2025-06 锁定分支)
+          URL="https://android.googlesource.com/kernel/manifest/+/refs/heads/common-android16-6.12-2025-06/default.xml?format=TEXT"
+          
+          echo "正在从 Google Git 下载 Manifest..."
+          # 使用 -f 遇错停止, -sL 靜默跟随重定向, --retry 增加稳定性
+          if ! curl -fsL --retry 5 "$URL" | base64 -d > manifest.xml; then
+            echo "错误: 下载或 Base64 解码失败。请检查网络或 URL。"
+            exit 1
+          fi
+
+          # 验证下载的文件开头是否为标准的 XML 声明
+          if [[ $(head -c 5 manifest.xml) != "<?xml" ]]; then
+            echo "错误: 下载的文件不是有效的 XML 格式！"
+            cat manifest.xml | head -n 20
+            exit 1
+          fi
+          echo "Manifest 下载成功并已验证格式。"
 
       - name: Parse Manifest and Generate JSON
         shell: python
@@ -24,18 +42,23 @@ jobs:
           import json
           import os
 
-          def get_toolchain():
-              tree = ET.parse('manifest.xml')
+          def generate_json():
+              manifest_file = 'manifest.xml'
+              if not os.path.exists(manifest_file):
+                  raise FileNotFoundError("找不到 manifest.xml 文件")
+
+              tree = ET.parse(manifest_file)
               root = tree.getroot()
-              
-              # 初始化数据结构
-              result = {
+
+              # 初始化输出结构
+              config = {
                   "version_tag": "common-android16-6.12-2025-06",
+                  "last_sync": os.popen('date -u +"%Y-%m-%dT%H:%M:%SZ"').read().strip(),
                   "toolchains": {}
               }
-              
-              # 核心组件定义
-              components = {
+
+              # 定义需要寻找的项目路径及其映射名称
+              target_paths = {
                   "prebuilts/clang/host/linux-x86": "clang",
                   "prebuilts/clang-tools": "clang_tools",
                   "prebuilts/rust": "rust"
@@ -43,44 +66,52 @@ jobs:
 
               for project in root.findall('project'):
                   path = project.get('path')
-                  if path in components:
-                      name = components[path]
+                  if path in target_paths:
+                      key = target_paths[path]
+                      name = project.get('name')
                       revision = project.get('revision')
-                      git_name = project.get('name')
-                      
-                      # 生成对应的下载链接
-                      if name == "clang":
-                          url = f"https://android.googlesource.com/{git_name}/+archive/{revision}.tar.gz"
-                      elif name == "clang_tools":
-                          # clang-tools 我们只需要 linux-x86/bin 目录
-                          url = f"https://android.googlesource.com/{git_name}/+archive/{revision}/linux-x86/bin.tar.gz"
-                      elif name == "rust":
-                          # 锁定 1.81.0 路径
-                          url = f"https://android.googlesource.com/{git_name}/+archive/{revision}/linux-x86/1.81.0.tar.gz"
-                      
-                      result["toolchains"][name] = {
-                          "path": path,
+
+                      # 根据组件类型生成对应的下载链接
+                      if key == "clang":
+                          # 编译器全包
+                          url = f"https://android.googlesource.com/{name}/+archive/{revision}.tar.gz"
+                      elif key == "clang_tools":
+                          # 工具类只取 linux-x86/bin 下的二进制
+                          url = f"https://android.googlesource.com/{name}/+archive/{revision}/linux-x86/bin.tar.gz"
+                      elif key == "rust":
+                          # 锁定 1.81.0 目录
+                          url = f"https://android.googlesource.com/{name}/+archive/{revision}/linux-x86/1.81.0.tar.gz"
+
+                      config["toolchains"][key] = {
                           "revision": revision,
-                          "url": url
+                          "url": url,
+                          "source_repo": name
                       }
+
+              # 将结果写入 toolchain.json
+              with open('toolchain.json', 'w', encoding='utf-8') as f:
+                  json.dump(config, f, indent=2, ensure_ascii=False)
               
-              # 写入 JSON
-              with open('toolchain.json', 'w') as f:
-                  json.dump(result, f, indent=2)
-              print("Successfully generated toolchain.json")
+              print("JSON 生成成功，包含组件: " + ", ".join(config["toolchains"].keys()))
 
           if __name__ == "__main__":
-              get_toolchain()
+              generate_json()
 
-      - name: Upload Toolchain JSON
-        uses: actions/upload-artifact@v4
-        with:
-          name: android16-toolchain-config
-          path: toolchain.json
-
-      - name: Commit and Push if Changed
+      - name: Commit and Push Changes
         run: |
           git config --local user.email "github-actions[bot]@users.noreply.github.com"
           git config --local user.name "github-actions[bot]"
-          git add toolchain.json
-          git diff --quiet && git diff --staged --quiet || (git commit -m "chore: update toolchain hashes from manifest" && git push)
+          
+          # 仅在文件有变化时提交
+          if [[ -n "$(git status --porcelain toolchain.json)" ]]; then
+            git add toolchain.json
+            git commit -m "chore: 自动同步 Android 16 工具链 Hash (2025-06)"
+            git push
+            echo "检测到 Hash 变动，已推送到仓库。"
+          else
+            echo "Hash 未发生变化，无需更新。"
+          fi
+
+      - name: Cleanup
+        if: always()
+        run: rm -f manifest.xml
