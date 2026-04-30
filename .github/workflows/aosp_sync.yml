@@ -46,26 +46,42 @@ jobs:
               if not commit or not path:
                   return ""
               
-              # 判断是否为完整的 40 位 commit hash
+              # 1. 判断是否为完整的 40 位 commit hash
               if re.fullmatch(r'[0-9a-f]{40}', commit):
                   url = f"{base_url}/{repo}/+/{commit}/{path}?format=TEXT"
-              else:
-                  # 尝试作为 tag
-                  url = f"{base_url}/{repo}/+/refs/tags/{commit}/{path}?format=TEXT"
+                  try:
+                      r = requests.get(url, timeout=30)
+                      if r.status_code == 200:
+                          text = r.text.strip()
+                          if text:
+                              return base64.b64decode(text).decode('utf-8', errors='ignore')
+                  except Exception as e:
+                      print(f"ERROR: {e}")
+                  return ""
               
+              # 2. 先尝试作为 branch
+              url = f"{base_url}/{repo}/+/refs/heads/{commit}/{path}?format=TEXT"
               try:
                   r = requests.get(url, timeout=30)
-                  if r.status_code != 200:
-                      return ""
-                  text = r.text.strip()
-                  if not text:
-                      return ""
-                  # 直接尝试 Base64 解码
-                  decoded = base64.b64decode(text).decode('utf-8', errors='ignore')
-                  return decoded
+                  if r.status_code == 200:
+                      text = r.text.strip()
+                      if text:
+                          return base64.b64decode(text).decode('utf-8', errors='ignore')
               except Exception as e:
-                  print(f"ERROR fetching {url}: {e}")
-                  return ""
+                  print(f"ERROR: {e}")
+              
+              # 3. 再尝试作为 tag
+              url = f"{base_url}/{repo}/+/refs/tags/{commit}/{path}?format=TEXT"
+              try:
+                  r = requests.get(url, timeout=30)
+                  if r.status_code == 200:
+                      text = r.text.strip()
+                      if text:
+                          return base64.b64decode(text).decode('utf-8', errors='ignore')
+              except Exception as e:
+                  print(f"ERROR: {e}")
+              
+              return ""
 
           def get_commit_hash(repo, rev):
               """通过 git ls-remote 获取 commit hash"""
