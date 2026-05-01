@@ -8,11 +8,6 @@ on:
         required: true
         type: string
         default: '3fbcdf38727f967badc13f9537bda0b4392c1f74'
-      branch:
-        description: 'Branch to fetch first'
-        required: true
-        type: string
-        default: 'main-kernel-2025'
 
 permissions:
   contents: write
@@ -29,67 +24,60 @@ jobs:
       - name: Clone and package build-tools
         run: |
           COMMIT="${{ github.event.inputs.commit_hash }}"
-          BRANCH="${{ github.event.inputs.branch }}"
           
-          # 克隆并切换到指定 commit
-          mkdir -p build-tools-source
-          cd build-tools-source
-          git init
-          git remote add origin https://android.googlesource.com/platform/prebuilts/build-tools
-          
-          # 先 fetch 分支（获取完整历史）
-          git fetch --depth 100 origin "$BRANCH"
-          git checkout FETCH_HEAD
-          
-          # Reset 到指定的 commit
-          git reset --hard "$COMMIT"
-          
-          # 检查目录结构
-          echo "=== Directory structure ==="
-          ls -la
-          
-          # 准备打包目录
-          mkdir -p package/linux-x86
-          
-          # 拷贝 linux-x86 下的内容
-          if [ -d "linux-x86" ]; then
-            echo "Copying linux-x86 contents..."
-            cp -r linux-x86/* package/linux-x86/
+          # 克隆仓库（如果 depth=1 失败，则完整克隆）
+          if ! git clone --depth 1 --branch "$COMMIT" https://android.googlesource.com/platform/prebuilts/build-tools build-tools-source 2>/dev/null; then
+            echo "Branch with commit not found, cloning full repo..."
+            git clone https://android.googlesource.com/platform/prebuilts/build-tools build-tools-source
+            cd build-tools-source
+            git fetch --depth 1 origin "$COMMIT"
+            git checkout "$COMMIT"
+            cd ..
           else
-            echo "Warning: linux-x86 directory not found"
+            cd build-tools-source
+            # 验证是否在正确的 commit
+            CURRENT_COMMIT=$(git rev-parse HEAD)
+            if [ "$CURRENT_COMMIT" != "$COMMIT" ]; then
+              echo "Commit mismatch, fetching specific commit..."
+              git fetch --depth 1 origin "$COMMIT"
+              git checkout "$COMMIT"
+            fi
+            cd ..
           fi
           
-          # 如果根目录有 share，拷贝到 linux-x86 下
+          cd build-tools-source
+          
+          # 检查 share 目录是否存在
           if [ -d "share" ]; then
-            echo "Copying share to package/linux-x86/"
-            cp -r share package/linux-x86/
+            echo "✅ share directory found in repository"
+          else
+            echo "⚠️ share directory not found in repository at this commit"
           fi
           
-          # 如果 linux-x86 下已经有 share，输出提示
-          if [ -d "linux-x86/share" ]; then
-            echo "share already in linux-x86, keeping as is"
-          fi
+          # 用 git archive 打包完整仓库（包含所有文件）
+          echo "Packaging build-tools with git archive..."
+          git archive --format=tar.gz --output=../build-tools.tar.gz HEAD
           
-          # 验证打包目录结构
-          echo "=== Package directory structure ==="
-          ls -la package/linux-x86/
-          
-          # 打包 package/linux-x86 下的内容（去掉 linux-x86 前缀）
-          cd package
-          tar -czf ../build-tools.tar.gz -C linux-x86 .
           cd ..
           
           ls -lh build-tools.tar.gz
           
           # 验证包内容
-          echo "Package contents (top level):"
-          tar -tzf build-tools.tar.gz | head -30
+          echo "=== Package contents verification ==="
+          echo "Top level directories:"
+          tar -tzf build-tools.tar.gz | grep -E '^[^/]+/$' | sort -u
           
-          # 检查 share 是否在包中
-          if tar -tzf build-tools.tar.gz | grep -q "share/"; then
+          echo ""
+          echo "Checking for share directory:"
+          if tar -tzf build-tools.tar.gz | grep -q "^share/"; then
             echo "✅ share directory is included in the package"
+            tar -tzf build-tools.tar.gz | grep "^share/" | head -10
           else
             echo "❌ share directory NOT found in package"
+            # 查找是否有 linux-x86/share
+            if tar -tzf build-tools.tar.gz | grep -q "linux-x86/share/"; then
+              echo "✅ share found at linux-x86/share/"
+            fi
           fi
 
       - name: Upload to Release
@@ -115,4 +103,4 @@ jobs:
 
       - name: Cleanup
         if: always()
-        run: rm -rf build-tools-source build-tools.tar.gz package
+        run: rm -rf build-tools-source build-tools.tar.gz
