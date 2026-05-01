@@ -4,10 +4,15 @@ on:
   workflow_dispatch:
     inputs:
       commit_hash:
-        description: 'Commit hash from env-14043575.json (prebuilts/build-tools.revision)'
+        description: 'Commit hash from env-14043575.json'
         required: true
         type: string
         default: '3fbcdf38727f967badc13f9537bda0b4392c1f74'
+      branch:
+        description: 'Branch to fetch first'
+        required: true
+        type: string
+        default: 'main-kernel-2025'
 
 permissions:
   contents: write
@@ -15,6 +20,8 @@ permissions:
 jobs:
   package:
     runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -22,24 +29,54 @@ jobs:
       - name: Clone and package build-tools
         run: |
           COMMIT="${{ github.event.inputs.commit_hash }}"
+          BRANCH="${{ github.event.inputs.branch }}"
           
-          # 克隆指定 commit 的完整仓库
+          # 克隆并切换到指定 commit
           mkdir -p build-tools-source
           cd build-tools-source
           git init
           git remote add origin https://android.googlesource.com/platform/prebuilts/build-tools
-          git fetch --depth 1 origin "$COMMIT"
+          
+          # 先 fetch 分支（获取完整历史）
+          git fetch --depth 100 origin "$BRANCH"
           git checkout FETCH_HEAD
           
-          # 验证 share 目录存在
-          if [ -d "share" ]; then
-            echo "share directory found"
+          # Reset 到指定的 commit
+          git reset --hard "$COMMIT"
+          
+          # 检查目录结构
+          echo "=== Directory structure ==="
+          ls -la
+          
+          # 准备打包目录
+          mkdir -p package/linux-x86
+          
+          # 拷贝 linux-x86 下的内容
+          if [ -d "linux-x86" ]; then
+            echo "Copying linux-x86 contents..."
+            cp -r linux-x86/* package/linux-x86/
           else
-            echo "Warning: share directory not found"
+            echo "Warning: linux-x86 directory not found"
           fi
           
-          # 打包完整仓库内容（包含 linux-x86/、share/ 等所有目录）
-          tar -czf ../build-tools.tar.gz --exclude=.git .
+          # 如果根目录有 share，拷贝到 linux-x86 下
+          if [ -d "share" ]; then
+            echo "Copying share to package/linux-x86/"
+            cp -r share package/linux-x86/
+          fi
+          
+          # 如果 linux-x86 下已经有 share，输出提示
+          if [ -d "linux-x86/share" ]; then
+            echo "share already in linux-x86, keeping as is"
+          fi
+          
+          # 验证打包目录结构
+          echo "=== Package directory structure ==="
+          ls -la package/linux-x86/
+          
+          # 打包 package/linux-x86 下的内容（去掉 linux-x86 前缀）
+          cd package
+          tar -czf ../build-tools.tar.gz -C linux-x86 .
           cd ..
           
           ls -lh build-tools.tar.gz
@@ -47,6 +84,13 @@ jobs:
           # 验证包内容
           echo "Package contents (top level):"
           tar -tzf build-tools.tar.gz | head -30
+          
+          # 检查 share 是否在包中
+          if tar -tzf build-tools.tar.gz | grep -q "share/"; then
+            echo "✅ share directory is included in the package"
+          else
+            echo "❌ share directory NOT found in package"
+          fi
 
       - name: Upload to Release
         run: |
@@ -71,4 +115,4 @@ jobs:
 
       - name: Cleanup
         if: always()
-        run: rm -rf build-tools-source build-tools.tar.gz
+        run: rm -rf build-tools-source build-tools.tar.gz package
