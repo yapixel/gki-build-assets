@@ -1,0 +1,74 @@
+name: Package Build Tools from AOSP
+
+on:
+  workflow_dispatch:
+    inputs:
+      commit_hash:
+        description: 'Commit hash from env-14043575.json (prebuilts/build-tools.revision)'
+        required: true
+        type: string
+        default: '3fbcdf38727f967badc13f9537bda0b4392c1f74'
+
+permissions:
+  contents: write
+
+jobs:
+  package:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Clone and package build-tools
+        run: |
+          COMMIT="${{ github.event.inputs.commit_hash }}"
+          
+          # 克隆指定 commit 的完整仓库
+          mkdir -p build-tools-source
+          cd build-tools-source
+          git init
+          git remote add origin https://android.googlesource.com/platform/prebuilts/build-tools
+          git fetch --depth 1 origin "$COMMIT"
+          git checkout FETCH_HEAD
+          
+          # 验证 share 目录存在
+          if [ -d "share" ]; then
+            echo "share directory found"
+          else
+            echo "Warning: share directory not found"
+          fi
+          
+          # 打包完整仓库内容（包含 linux-x86/、share/ 等所有目录）
+          tar -czf ../build-tools.tar.gz --exclude=.git .
+          cd ..
+          
+          ls -lh build-tools.tar.gz
+          
+          # 验证包内容
+          echo "Package contents (top level):"
+          tar -tzf build-tools.tar.gz | head -30
+
+      - name: Upload to Release
+        run: |
+          TAG="r536225"
+          FILE="build-tools.tar.gz"
+          
+          if gh release view "$TAG" --repo yapixel/gki-build-assets &>/dev/null; then
+            echo "Release $TAG exists, uploading asset..."
+          else
+            echo "Creating release $TAG..."
+            gh release create "$TAG" \
+              --repo yapixel/gki-build-assets \
+              --title "$TAG" \
+              --notes "Toolchain components for $TAG"
+          fi
+          
+          gh release upload "$TAG" "$FILE" \
+            --repo yapixel/gki-build-assets \
+            --clobber
+          
+          echo "Uploaded $FILE to release $TAG"
+
+      - name: Cleanup
+        if: always()
+        run: rm -rf build-tools-source build-tools.tar.gz
