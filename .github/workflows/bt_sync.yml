@@ -1,92 +1,41 @@
-name: Package Build Tools from AOSP
+name: Mirror MidoriKSU Build Tools
 
 on:
   workflow_dispatch:
     inputs:
-      commit_hash:
-        description: 'Commit hash from env-14043575.json'
+      source_url:
+        description: 'MidoriKSU build-tools download URL'
         required: true
         type: string
-        default: '3fbcdf38727f967badc13f9537bda0b4392c1f74'
+        default: 'https://github.com/MidoriKSU/dami-kernel-build/releases/download/0/build-tools.tar.gz'
 
 permissions:
   contents: write
 
 jobs:
-  package:
+  mirror:
     runs-on: ubuntu-latest
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Clone and package build-tools
+      - name: Download MidoriKSU build-tools
         run: |
-          COMMIT="${{ github.event.inputs.commit_hash }}"
-          
-          # 克隆仓库（如果 depth=1 失败，则完整克隆）
-          if ! git clone --depth 1 --branch "$COMMIT" https://android.googlesource.com/platform/prebuilts/build-tools build-tools-source 2>/dev/null; then
-            echo "Branch with commit not found, cloning full repo..."
-            git clone https://android.googlesource.com/platform/prebuilts/build-tools build-tools-source
-            cd build-tools-source
-            git fetch --depth 1 origin "$COMMIT"
-            git checkout "$COMMIT"
-            cd ..
-          else
-            cd build-tools-source
-            # 验证是否在正确的 commit
-            CURRENT_COMMIT=$(git rev-parse HEAD)
-            if [ "$CURRENT_COMMIT" != "$COMMIT" ]; then
-              echo "Commit mismatch, fetching specific commit..."
-              git fetch --depth 1 origin "$COMMIT"
-              git checkout "$COMMIT"
-            fi
-            cd ..
-          fi
-          
-          cd build-tools-source
-          
-          # 检查 share 目录是否存在
-          if [ -d "share" ]; then
-            echo "✅ share directory found in repository"
-          else
-            echo "⚠️ share directory not found in repository at this commit"
-          fi
-          
-          # 用 git archive 打包完整仓库（包含所有文件）
-          echo "Packaging build-tools with git archive..."
-          git archive --format=tar.gz --output=../build-tools.tar.gz HEAD
-          
-          cd ..
-          
+          echo "Downloading from ${{ github.event.inputs.source_url }}"
+          aria2c -s16 -x16 -k1M "${{ github.event.inputs.source_url }}" -o build-tools.tar.gz
           ls -lh build-tools.tar.gz
           
           # 验证包内容
-          echo "=== Package contents verification ==="
-          echo "Top level directories:"
-          tar -tzf build-tools.tar.gz | grep -E '^[^/]+/$' | sort -u
-          
-          echo ""
-          echo "Checking for share directory:"
-          if tar -tzf build-tools.tar.gz | grep -q "^share/"; then
-            echo "✅ share directory is included in the package"
-            tar -tzf build-tools.tar.gz | grep "^share/" | head -10
-          else
-            echo "❌ share directory NOT found in package"
-            # 查找是否有 linux-x86/share
-            if tar -tzf build-tools.tar.gz | grep -q "linux-x86/share/"; then
-              echo "✅ share found at linux-x86/share/"
-            fi
-          fi
+          echo "Package contents (top level):"
+          tar -tzf build-tools.tar.gz | head -20
 
-      - name: Upload to Release
+      - name: Upload to gki-build-assets Release
         run: |
           TAG="r536225"
           FILE="build-tools.tar.gz"
           
+          # 确保 Release 存在
           if gh release view "$TAG" --repo yapixel/gki-build-assets &>/dev/null; then
-            echo "Release $TAG exists, uploading asset..."
+            echo "Release $TAG exists"
           else
             echo "Creating release $TAG..."
             gh release create "$TAG" \
@@ -95,12 +44,13 @@ jobs:
               --notes "Toolchain components for $TAG"
           fi
           
+          # 上传文件（覆盖已存在的）
           gh release upload "$TAG" "$FILE" \
             --repo yapixel/gki-build-assets \
             --clobber
           
-          echo "Uploaded $FILE to release $TAG"
+          echo "Successfully uploaded $FILE to release $TAG"
 
       - name: Cleanup
         if: always()
-        run: rm -rf build-tools-source build-tools.tar.gz
+        run: rm -f build-tools.tar.gz
