@@ -13,11 +13,9 @@ on:
         required: true
         type: choice
         options:
-          - label: 'clang-r536225'
-            value: 'https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+/refs/heads/main-kernel-2025/clang-r536225/manifest_14043575.xml?format=TEXT'
-          - label: 'clang-r547379'
-            value: 'https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+/refs/heads/main-kernel-2025/clang-r547379/manifest_13290119.xml?format=TEXT'
-        default: 'https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+/refs/heads/main-kernel-2025/clang-r547379/manifest_13290119.xml?format=TEXT'
+          - 'clang-r536225'
+          - 'clang-r547379'
+        default: 'clang-r547379'
 
 permissions:
   contents: write
@@ -69,7 +67,18 @@ jobs:
       - name: Download and parse clang manifest
         id: clang
         run: |
-          curl -fsL --retry 5 "${{ github.event.inputs.clang_manifest_url }}" | base64 -d > clang_manifest.xml
+          CLANG_CHOICE="${{ github.event.inputs.clang_manifest_url }}"
+          case "$CLANG_CHOICE" in
+            "clang-r536225")
+              CLANG_URL="https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+/refs/heads/main-kernel-2025/clang-r536225/manifest_14043575.xml?format=TEXT"
+              ;;
+            "clang-r547379")
+              CLANG_URL="https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+/refs/heads/main-kernel-2025/clang-r547379/manifest_13290119.xml?format=TEXT"
+              ;;
+          esac
+          
+          echo "Using Clang URL: $CLANG_URL"
+          curl -fsL --retry 5 "$CLANG_URL" | base64 -d > clang_manifest.xml
           
           python3 << 'EOF'
           import xml.etree.ElementTree as ET
@@ -163,18 +172,25 @@ jobs:
 
       - name: Generate environment complete JSON
         run: |
-          python3 -c "import re; url='${{ github.event.inputs.clang_manifest_url }}'; m=re.search(r'manifest_(\d+)\.xml', url); print(m.group(1) if m else 'unknown')" > manifest_id.txt
-          MANIFEST_ID=$(cat manifest_id.txt)
+          CLANG_CHOICE="${{ github.event.inputs.clang_manifest_url }}"
+          case "$CLANG_CHOICE" in
+            "clang-r536225")
+              MANIFEST_ID="14043575"
+              ;;
+            "clang-r547379")
+              MANIFEST_ID="13290119"
+              ;;
+          esac
+          
           OUTPUT_FILE="env-${MANIFEST_ID}.json"
           echo "OUTPUT_FILE=${OUTPUT_FILE}" >> $GITHUB_ENV
           echo "MANIFEST_ID=${MANIFEST_ID}" >> $GITHUB_ENV
           
-          python3 << 'EOF'
+          python3 << EOF
           import json
           import os
           
-          with open('manifest_id.txt', 'r') as f:
-              manifest_id = f.read().strip()
+          manifest_id = "${MANIFEST_ID}"
           
           with open('kernel_manifest.json', 'r') as f:
               kernel_components = json.load(f)
