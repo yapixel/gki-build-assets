@@ -1,6 +1,6 @@
 {
   "environment": "13290119",
-  "last_update": "2026-05-07T05:58:41Z",
+  "last_update": "2026-05-07T06:06:05Z",
   "kernel": {
     "branch": "android16-6.12-2025-06",
     "rust_version": "1.82.0",
@@ -17,13 +17,13 @@
     },
     "prebuilts/clang-tools": {
       "name": "platform/prebuilts/clang-tools",
-      "revision": "c03d5bc912878cdcbdc38fcb003e94116b978956",
+      "revision": "",
       "original_branch": "main-kernel-2025",
       "source": "kernel_manifest.xml"
     },
     "prebuilts/rust": {
       "name": "platform/prebuilts/rust",
-      "revision": "4c613cfb8c5ca9689614fb2110bfd03a2a2f641a",
+      "revision": "",
       "original_branch": "main-kernel-2025",
       "source": "kernel_manifest.xml"
     },
@@ -34,12 +34,12 @@
     },
     "prebuilts/build-tools": {
       "name": "platform/prebuilts/build-tools",
-      "revision": "574765b494f226284968a8d156437e4c932aad61",
+      "revision": "",
       "source": "clang_manifest.xml"
     },
     "prebuilts/clang/host/linux-x86": {
       "name": "platform/prebuilts/clang/host/linux-x86",
-      "revision": "",
+      "revision": "unknown",
       "source": "clang_manifest.xml"
     }
   },
