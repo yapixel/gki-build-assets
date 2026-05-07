@@ -122,33 +122,11 @@ jobs:
             fi
           }
           
-          # Clang 主仓库
-          CLANG_REPO="prebuilts/clang/host/linux-x86"
-          CLANG_TAG="${{ github.event.inputs.clang_choice }}"
-          
-          CLANG_HASH=$(git ls-remote "https://android.googlesource.com/${CLANG_REPO}" "refs/tags/${CLANG_TAG}" | grep -v '\^{}' | cut -f1)
-          if [ -z "$CLANG_HASH" ]; then
-            CLANG_HASH=$(git ls-remote "https://android.googlesource.com/${CLANG_REPO}" | grep "${CLANG_TAG}" | grep -v '\^{}' | cut -f1 | head -1)
-          fi
-          echo "clang_hash=${CLANG_HASH:-unknown}" >> $GITHUB_OUTPUT
-          
-          # Build-tools
-          BUILD_TOOLS_NAME=$(jq -r '.clang["prebuilts/build-tools"].name' parsed_data.json)
-          BUILD_TOOLS_REPO="${BUILD_TOOLS_NAME#platform/}"
-          BUILD_TOOLS_HASH=$(get_hash "$BUILD_TOOLS_REPO" "main-kernel-2025")
-          echo "build_tools_hash=${BUILD_TOOLS_HASH}" >> $GITHUB_OUTPUT
-          
-          # LLVM 项目
-          LLVM_NAME=$(jq -r '.clang["toolchain/llvm-project"].name' parsed_data.json)
-          LLVM_HASH=$(get_hash "$LLVM_NAME" "main-kernel-2025")
-          echo "llvm_hash=${LLVM_HASH}" >> $GITHUB_OUTPUT
-          
-          # Clang-tools
-          CLANG_TOOLS_NAME=$(jq -r '.kernel["prebuilts/clang-tools"].name' parsed_data.json)
-          CLANG_TOOLS_REPO="${CLANG_TOOLS_NAME#platform/}"
-          CLANG_TOOLS_REV=$(jq -r '.kernel["prebuilts/clang-tools"].revision' parsed_data.json)
-          CLANG_TOOLS_HASH=$(get_hash "$CLANG_TOOLS_REPO" "$CLANG_TOOLS_REV")
-          echo "clang_tools_hash=${CLANG_TOOLS_HASH}" >> $GITHUB_OUTPUT
+          # Common
+          COMMON_NAME=$(jq -r '.kernel["common"].name' parsed_data.json)
+          COMMON_REV=$(jq -r '.kernel["common"].revision' parsed_data.json)
+          COMMON_HASH=$(get_hash "$COMMON_NAME" "$COMMON_REV")
+          echo "common_hash=${COMMON_HASH}" >> $GITHUB_OUTPUT
           
           # Rust
           RUST_NAME=$(jq -r '.kernel["prebuilts/rust"].name' parsed_data.json)
@@ -157,11 +135,31 @@ jobs:
           RUST_HASH=$(get_hash "$RUST_REPO" "$RUST_REV")
           echo "rust_hash=${RUST_HASH}" >> $GITHUB_OUTPUT
           
-          # Common
-          COMMON_NAME=$(jq -r '.kernel["common"].name' parsed_data.json)
-          COMMON_REV=$(jq -r '.kernel["common"].revision' parsed_data.json)
-          COMMON_HASH=$(get_hash "$COMMON_NAME" "$COMMON_REV")
-          echo "common_hash=${COMMON_HASH}" >> $GITHUB_OUTPUT
+          # Clang-tools
+          CLANG_TOOLS_NAME=$(jq -r '.kernel["prebuilts/clang-tools"].name' parsed_data.json)
+          CLANG_TOOLS_REPO="${CLANG_TOOLS_NAME#platform/}"
+          CLANG_TOOLS_REV=$(jq -r '.kernel["prebuilts/clang-tools"].revision' parsed_data.json)
+          CLANG_TOOLS_HASH=$(get_hash "$CLANG_TOOLS_REPO" "$CLANG_TOOLS_REV")
+          echo "clang_tools_hash=${CLANG_TOOLS_HASH}" >> $GITHUB_OUTPUT
+          
+          # Clang 主仓库 - 用 manifest 中的 revision（分支名）
+          CLANG_REPO="prebuilts/clang/host/linux-x86"
+          CLANG_REV=$(jq -r '.clang["prebuilts/clang/host/linux-x86"].revision' parsed_data.json)
+          CLANG_HASH=$(get_hash "$CLANG_REPO" "$CLANG_REV")
+          echo "clang_hash=${CLANG_HASH}" >> $GITHUB_OUTPUT
+          
+          # Build-tools
+          BUILD_TOOLS_NAME=$(jq -r '.clang["prebuilts/build-tools"].name' parsed_data.json)
+          BUILD_TOOLS_REPO="${BUILD_TOOLS_NAME#platform/}"
+          BUILD_TOOLS_REV=$(jq -r '.clang["prebuilts/build-tools"].revision' parsed_data.json)
+          BUILD_TOOLS_HASH=$(get_hash "$BUILD_TOOLS_REPO" "$BUILD_TOOLS_REV")
+          echo "build_tools_hash=${BUILD_TOOLS_HASH}" >> $GITHUB_OUTPUT
+          
+          # LLVM 项目 - 直接用 name 作为 repo
+          LLVM_NAME=$(jq -r '.clang["toolchain/llvm-project"].name' parsed_data.json)
+          LLVM_REV=$(jq -r '.clang["toolchain/llvm-project"].revision' parsed_data.json)
+          LLVM_HASH=$(get_hash "$LLVM_NAME" "$LLVM_REV")
+          echo "llvm_hash=${LLVM_HASH}" >> $GITHUB_OUTPUT
           
           # Common tag
           curl -fsL "https://android.googlesource.com/${COMMON_NAME}/+refs?format=JSON" | sed '1d' > common_refs.json
@@ -218,6 +216,7 @@ jobs:
               }
           }
           
+          # Kernel 组件
           for path, info in data['kernel'].items():
               if path == 'common':
                   hash_val = "${{ steps.resolve.outputs.common_hash }}"
@@ -238,6 +237,7 @@ jobs:
                   env_config["components"][path]["tag"] = common_tag
                   env_config["components"][path]["download_url"] = f"https://android.googlesource.com/{common_name}/+archive/refs/tags/{common_tag}.tar.gz"
           
+          # Clang 组件
           for path, info in data['clang'].items():
               if path == 'prebuilts/clang/host/linux-x86':
                   hash_val = "${{ steps.resolve.outputs.clang_hash }}"
