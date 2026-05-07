@@ -136,7 +136,7 @@ jobs:
           echo "rust_version=${RUST_VER}" >> $GITHUB_OUTPUT
           echo "branch=${BRANCH}" >> $GITHUB_OUTPUT
 
-      - name: Resolve branch names to commit hashes
+      - name: Resolve branch names to commit hashes and latest tag
         id: resolve
         run: |
           get_hash() {
@@ -164,8 +164,28 @@ jobs:
           COMMON_HASH=$(get_hash "$COMMON_NAME" "$COMMON_REV")
           echo "common_hash=${COMMON_HASH}" >> $GITHUB_OUTPUT
           
-          # 获取 common 的最新 _rXX tag（按数字排序取最大值）
-          COMMON_TAG=$(git ls-remote --tags "https://android.googlesource.com/${COMMON_NAME}" | grep "android16-6.12-2025-06" | grep -v '\^{}' | sed 's/.*_r\([0-9]*\).*/\1 &/' | sort -n | tail -1 | cut -d' ' -f2 | sed 's|refs/tags/||')
+          # 使用 AOSP JSON API 获取所有 refs，提取最新 _rXX tag
+          curl -fsL "https://android.googlesource.com/${COMMON_NAME}/+refs?format=JSON" | sed '1d' > common_refs.json
+          
+          COMMON_TAG=$(python3 << 'PYEOF'
+          import json
+          
+          with open('common_refs.json', 'r') as f:
+              data = json.load(f)
+          
+          tags = []
+          for ref in data.keys():
+              if 'refs/tags/android16-6.12-2025-06_r' in ref:
+                  r_num = int(ref.split('_r')[-1])
+                  tags.append((r_num, ref.replace('refs/tags/', '')))
+          
+          if tags:
+              tags.sort(key=lambda x: x[0], reverse=True)
+              print(tags[0][1])
+          else:
+              print("unknown")
+          PYEOF
+          )
           echo "common_tag=${COMMON_TAG}" >> $GITHUB_OUTPUT
           echo "Resolved common tag: $COMMON_TAG"
 
