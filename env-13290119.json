@@ -1,6 +1,6 @@
 {
   "environment": "13290119",
-  "last_update": "2026-05-07T04:20:50Z",
+  "last_update": "2026-05-07T04:43:24Z",
   "kernel": {
     "branch": "android16-6.12",
     "rust_version": "1.82.0",
@@ -26,9 +26,9 @@
       "name": "kernel/common",
       "revision": "2059498fdeda11f110dd3d228698c61b8140be84",
       "original_branch": "android16-6.12-2025-06",
-      "tag": "android16-6.12-2025-06_r3",
+      "tag": "37e196381e1c7823be8c0774d15cb34855b2ee04\tandroid16-6.12-2025-06_r58",
       "source": "kernel_manifest",
-      "download_url": "https://android.googlesource.com/kernel/common/+archive/refs/tags/android16-6.12-2025-06_r3.tar.gz"
+      "download_url": "https://android.googlesource.com/kernel/common/+archive/refs/tags/37e196381e1c7823be8c0774d15cb34855b2ee04\tandroid16-6.12-2025-06_r58.tar.gz"
     },
     "prebuilts/clang-tools": {
       "name": "platform/prebuilts/clang-tools",
