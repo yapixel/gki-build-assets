@@ -4,10 +4,13 @@ on:
   workflow_dispatch:
     inputs:
       env_json:
-        description: 'Environment JSON file (env-14043575.json)'
+        description: 'Environment JSON file'
         required: true
-        type: string
-        default: 'env-14043575.json'
+        type: choice
+        options:
+          - 'env-13290119.json'
+          - 'env-14043575.json'
+        default: 'env-13290119.json'
 
 permissions:
   contents: write
@@ -29,33 +32,32 @@ jobs:
         run: |
           ENV_FILE="${{ github.event.inputs.env_json }}"
           
-          # 读取各组件信息
-          KERNEL_REV=$(jq -r '.components.common.revision' "$ENV_FILE")
+          KERNEL_DOWNLOAD_URL=$(jq -r '.components.common.download_url' "$ENV_FILE")
+          KERNEL_TAG=$(jq -r '.components.common.tag' "$ENV_FILE")
+          KERNEL_BRANCH=$(jq -r '.components.common.original_branch' "$ENV_FILE")
+          
           CLANG_REV=$(jq -r '.components["prebuilts/clang/host/linux-x86"].revision' "$ENV_FILE")
           RUST_REV=$(jq -r '.components["prebuilts/rust"].revision' "$ENV_FILE")
           CLANG_TOOLS_REV=$(jq -r '.components["prebuilts/clang-tools"].revision' "$ENV_FILE")
           BUILD_TOOLS_REV=$(jq -r '.components["prebuilts/build-tools"].revision' "$ENV_FILE")
           
-          CLANG_VER=$(jq -r '.kernel.clang_version' "$ENV_FILE")
+          CLANG_VER=$(jq -r '.clang_toolchain.version' "$ENV_FILE")
           RUST_VER=$(jq -r '.kernel.rust_version' "$ENV_FILE")
-          KERNEL_TAG=$(jq -r '.components.common.original_branch' "$ENV_FILE")
           
-          # 构建下载 URL
-          KERNEL_URL="https://android.googlesource.com/kernel/common/+archive/${KERNEL_REV}.tar.gz"
           CLANG_URL="https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/${CLANG_REV}.tar.gz"
           RUST_URL="https://android.googlesource.com/platform/prebuilts/rust/+archive/${RUST_REV}/linux-x86/${RUST_VER}.tar.gz"
           CLANG_TOOLS_URL="https://android.googlesource.com/platform/prebuilts/clang-tools/+archive/${CLANG_TOOLS_REV}/linux-x86/bin.tar.gz"
           BUILD_TOOLS_URL="https://android.googlesource.com/platform/prebuilts/build-tools/+archive/${BUILD_TOOLS_REV}.tar.gz"
           
-          echo "kernel_rev=${KERNEL_REV}" >> $GITHUB_OUTPUT
-          echo "kernel_url=${KERNEL_URL}" >> $GITHUB_OUTPUT
+          echo "kernel_download_url=${KERNEL_DOWNLOAD_URL}" >> $GITHUB_OUTPUT
+          echo "kernel_tag=${KERNEL_TAG}" >> $GITHUB_OUTPUT
+          echo "kernel_branch=${KERNEL_BRANCH}" >> $GITHUB_OUTPUT
           echo "clang_url=${CLANG_URL}" >> $GITHUB_OUTPUT
           echo "rust_url=${RUST_URL}" >> $GITHUB_OUTPUT
           echo "clang_tools_url=${CLANG_TOOLS_URL}" >> $GITHUB_OUTPUT
           echo "build_tools_url=${BUILD_TOOLS_URL}" >> $GITHUB_OUTPUT
           echo "clang_version=${CLANG_VER}" >> $GITHUB_OUTPUT
           echo "rust_version=${RUST_VER}" >> $GITHUB_OUTPUT
-          echo "kernel_tag=${KERNEL_TAG}" >> $GITHUB_OUTPUT
 
       - name: Process clang
         run: |
@@ -117,7 +119,7 @@ jobs:
       - name: Process kernel
         run: |
           TAG="${{ steps.env.outputs.kernel_tag }}"
-          FILE="${TAG#common-}.tar.gz"
+          FILE="common-${TAG#android16-6.12-}.tar.gz"
           
           if ! gh release view "$TAG" --repo yapixel/gki-build-assets &>/dev/null; then
             gh release create "$TAG" --repo yapixel/gki-build-assets --title "$TAG" --notes "Kernel source"
@@ -126,7 +128,7 @@ jobs:
           if gh release view "$TAG" --repo yapixel/gki-build-assets --json assets -q ".assets[].name" | grep -q "$FILE"; then
             echo "$FILE already exists, skipping"
           else
-            aria2c -s16 -x16 -k1M "${{ steps.env.outputs.kernel_url }}" -o "$FILE"
+            aria2c -s16 -x16 -k1M "${{ steps.env.outputs.kernel_download_url }}" -o "$FILE"
             gh release upload "$TAG" "$FILE" --repo yapixel/gki-build-assets --clobber
             rm "$FILE"
           fi
