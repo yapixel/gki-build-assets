@@ -11,8 +11,13 @@ on:
       clang_manifest_url:
         description: 'Clang manifest URL'
         required: true
-        type: string
-        default: 'https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+/refs/heads/main-kernel-2025/clang-r536225/manifest_14043575.xml?format=TEXT'
+        type: choice
+        options:
+          - label: 'clang-r536225'
+            value: 'https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+/refs/heads/main-kernel-2025/clang-r536225/manifest_14043575.xml?format=TEXT'
+          - label: 'clang-r547379'
+            value: 'https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+/refs/heads/main-kernel-2025/clang-r547379/manifest_13290119.xml?format=TEXT'
+        default: 'https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+/refs/heads/main-kernel-2025/clang-r547379/manifest_13290119.xml?format=TEXT'
 
 permissions:
   contents: write
@@ -34,7 +39,6 @@ jobs:
           
           python3 << 'EOF'
           import xml.etree.ElementTree as ET
-          import os
           import json
           
           tree = ET.parse('kernel_manifest.xml')
@@ -43,7 +47,6 @@ jobs:
           default = root.find('default')
           default_rev = default.get('revision') if default is not None else ""
           
-          # 提取关键项目
           projects = {}
           for project in root.findall('project'):
               path = project.get('path')
@@ -70,7 +73,6 @@ jobs:
           
           python3 << 'EOF'
           import xml.etree.ElementTree as ET
-          import os
           import json
           import re
           
@@ -80,18 +82,15 @@ jobs:
           default = root.find('default')
           default_rev = default.get('revision') if default is not None else ""
           
-          # 提取 clang 版本号
           version_match = re.search(r'r(\d+)', default_rev)
           clang_version = f"r{version_match.group(1)}" if version_match else ""
           
-          # 提取关键项目
           projects = {}
           for project in root.findall('project'):
               path = project.get('path')
               name = project.get('name')
               revision = project.get('revision') or default_rev
               
-              # 只保留需要的组件
               if path in ['prebuilts/clang/host/linux-x86', 'prebuilts/build-tools', 'toolchain/llvm-project']:
                   projects[path] = {
                       "name": name,
@@ -114,14 +113,12 @@ jobs:
       - name: Download kernel build.config.constants
         id: build_config
         run: |
-          # 从 kernel manifest 中获取 common 的 revision
           COMMON_REV=$(jq -r '.["common"].revision' kernel_manifest.json)
           KERNEL_URL="https://android.googlesource.com/kernel/common/+/refs/heads/${COMMON_REV}/build.config.constants?format=TEXT"
           
           echo "Downloading build.config.constants from: $KERNEL_URL"
           curl -fsL --retry 5 "$KERNEL_URL" | base64 -d > build.config.constants
           
-          # 提取版本信息
           CLANG_VER=$(grep "^CLANG_VERSION=" build.config.constants | cut -d'=' -f2 | tr -d '"')
           RUST_VER=$(grep "^RUSTC_VERSION=" build.config.constants | cut -d'=' -f2 | tr -d '"')
           BRANCH=$(grep "^BRANCH=" build.config.constants | cut -d'=' -f2 | tr -d '"')
@@ -143,31 +140,42 @@ jobs:
             fi
           }
           
-          # 获取 clang-tools 的 commit hash
           CLANG_TOOLS_NAME=$(jq -r '.["prebuilts/clang-tools"].name' kernel_manifest.json)
           CLANG_TOOLS_REV=$(jq -r '.["prebuilts/clang-tools"].revision' kernel_manifest.json)
           CLANG_TOOLS_HASH=$(get_hash "$CLANG_TOOLS_NAME" "$CLANG_TOOLS_REV")
           echo "clang_tools_hash=${CLANG_TOOLS_HASH}" >> $GITHUB_OUTPUT
           
-          # 获取 rust 的 commit hash
           RUST_NAME=$(jq -r '.["prebuilts/rust"].name' kernel_manifest.json)
           RUST_REV=$(jq -r '.["prebuilts/rust"].revision' kernel_manifest.json)
           RUST_HASH=$(get_hash "$RUST_NAME" "$RUST_REV")
           echo "rust_hash=${RUST_HASH}" >> $GITHUB_OUTPUT
           
-          # 获取 common 的 commit hash
           COMMON_NAME=$(jq -r '.["common"].name' kernel_manifest.json)
           COMMON_REV=$(jq -r '.["common"].revision' kernel_manifest.json)
           COMMON_HASH=$(get_hash "$COMMON_NAME" "$COMMON_REV")
           echo "common_hash=${COMMON_HASH}" >> $GITHUB_OUTPUT
+          
+          # 获取 common 的最新 _rXX tag（android16-6.12-2025-06 开头）
+          COMMON_PREFIX="android16-6.12-2025-06"
+          COMMON_TAG=$(git ls-remote --tags "https://android.googlesource.com/${COMMON_NAME}" | grep -E "refs/tags/${COMMON_PREFIX}_r[0-9]+" | sort -t'r' -k2 -n | tail -1 | cut -f2 | sed 's|refs/tags/||')
+          echo "common_tag=${COMMON_TAG}" >> $GITHUB_OUTPUT
+          echo "Resolved common tag: $COMMON_TAG"
 
-      - name: Generate complete environment JSON
+      - name: Generate environment complete JSON
         run: |
+          python3 -c "import re; url='${{ github.event.inputs.clang_manifest_url }}'; m=re.search(r'manifest_(\d+)\.xml', url); print(m.group(1) if m else 'unknown')" > manifest_id.txt
+          MANIFEST_ID=$(cat manifest_id.txt)
+          OUTPUT_FILE="env-${MANIFEST_ID}.json"
+          echo "OUTPUT_FILE=${OUTPUT_FILE}" >> $GITHUB_ENV
+          echo "MANIFEST_ID=${MANIFEST_ID}" >> $GITHUB_ENV
+          
           python3 << 'EOF'
           import json
           import os
           
-          # 读取各 manifest 的解析结果
+          with open('manifest_id.txt', 'r') as f:
+              manifest_id = f.read().strip()
+          
           with open('kernel_manifest.json', 'r') as f:
               kernel_components = json.load(f)
           
@@ -175,9 +183,10 @@ jobs:
               clang_data = json.load(f)
               clang_components = clang_data.get('components', {})
           
-          # 构建完整的环境配置
+          output_file = f"env-{manifest_id}.json"
+          
           env_config = {
-              "environment": "14043575",
+              "environment": manifest_id,
               "last_update": os.popen('date -u +"%Y-%m-%dT%H:%M:%SZ"').read().strip(),
               "kernel": {
                   "branch": "${{ steps.build_config.outputs.branch }}",
@@ -187,19 +196,21 @@ jobs:
               "components": {}
           }
           
-          # 合并 clang_manifest 中的组件（已有 hash）
           for path, info in clang_components.items():
               env_config["components"][path] = info
           
-          # 添加内核组件（使用解析后的 hash）
+          common_tag = "${{ steps.resolve.outputs.common_tag }}"
+          common_name = kernel_components["common"]["name"]
+          
           env_config["components"]["common"] = {
-              "name": kernel_components["common"]["name"],
+              "name": common_name,
               "revision": "${{ steps.resolve.outputs.common_hash }}",
               "original_branch": kernel_components["common"]["revision"],
-              "source": "kernel_manifest"
+              "tag": common_tag,
+              "source": "kernel_manifest",
+              "download_url": f"https://android.googlesource.com/{common_name}/+archive/refs/tags/{common_tag}.tar.gz"
           }
           
-          # 添加 clang-tools（使用解析后的 hash）
           env_config["components"]["prebuilts/clang-tools"] = {
               "name": kernel_components["prebuilts/clang-tools"]["name"],
               "revision": "${{ steps.resolve.outputs.clang_tools_hash }}",
@@ -207,7 +218,6 @@ jobs:
               "source": "kernel_manifest"
           }
           
-          # 添加 rust（使用解析后的 hash）
           env_config["components"]["prebuilts/rust"] = {
               "name": kernel_components["prebuilts/rust"]["name"],
               "revision": "${{ steps.resolve.outputs.rust_hash }}",
@@ -215,22 +225,22 @@ jobs:
               "source": "kernel_manifest"
           }
           
-          # 添加 clang 版本信息
           env_config["clang_toolchain"] = {
               "version": clang_data.get("clang_version", ""),
-              "manifest": "14043575"
+              "manifest": manifest_id
           }
           
-          with open('env-14043575.json', 'w') as f:
+          with open(output_file, 'w') as f:
               json.dump(env_config, f, indent=2)
           
-          print("Generated env-14043575.json")
+          print(f"Generated {output_file}")
+          print(f"Kernel download URL: https://android.googlesource.com/{common_name}/+archive/refs/tags/{common_tag}.tar.gz")
           EOF
 
       - name: Commit and push JSON
         run: |
           git config --local user.email "github-actions[bot]@users.noreply.github.com"
           git config --local user.name "github-actions[bot]"
-          git add env-14043575.json
-          git diff --quiet && git diff --staged --quiet || git commit -m "Update environment config for 14043575"
-          git push
+          git add "${{ env.OUTPUT_FILE }}"
+          git diff --quiet && git diff --staged --quiet || git commit -m "Update environment config for ${{ env.MANIFEST_ID }}"
+          git push origin HEAD
