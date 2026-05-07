@@ -125,21 +125,44 @@ jobs:
             fi
           }
           
+          # Clang 主仓库：用分支名获取真正的 commit hash
+          CLANG_REPO="platform/prebuilts/clang/host/linux-x86"
+          CLANG_TAG="${{ github.event.inputs.clang_choice }}"
+          CLANG_HASH=$(git ls-remote "https://android.googlesource.com/${CLANG_REPO}" "refs/heads/main-kernel-2025/${CLANG_TAG}" | cut -f1)
+          echo "clang_hash=${CLANG_HASH}" >> $GITHUB_OUTPUT
+          echo "Resolved Clang hash: $CLANG_HASH"
+          
+          # Build-tools
+          BUILD_TOOLS_NAME=$(jq -r '.clang["prebuilts/build-tools"].name' parsed_data.json)
+          BUILD_TOOLS_HASH=$(get_hash "$BUILD_TOOLS_NAME" "main-kernel-2025")
+          echo "build_tools_hash=${BUILD_TOOLS_HASH}" >> $GITHUB_OUTPUT
+          echo "Resolved Build-tools hash: $BUILD_TOOLS_HASH"
+          
+          # LLVM 项目
+          LLVM_NAME=$(jq -r '.clang["toolchain/llvm-project"].name' parsed_data.json)
+          LLVM_HASH=$(get_hash "$LLVM_NAME" "main-kernel-2025")
+          echo "llvm_hash=${LLVM_HASH}" >> $GITHUB_OUTPUT
+          echo "Resolved LLVM hash: $LLVM_HASH"
+          
+          # Clang-tools
           CLANG_TOOLS_NAME=$(jq -r '.kernel["prebuilts/clang-tools"].name' parsed_data.json)
           CLANG_TOOLS_REV=$(jq -r '.kernel["prebuilts/clang-tools"].revision' parsed_data.json)
           CLANG_TOOLS_HASH=$(get_hash "$CLANG_TOOLS_NAME" "$CLANG_TOOLS_REV")
           echo "clang_tools_hash=${CLANG_TOOLS_HASH}" >> $GITHUB_OUTPUT
           
+          # Rust
           RUST_NAME=$(jq -r '.kernel["prebuilts/rust"].name' parsed_data.json)
           RUST_REV=$(jq -r '.kernel["prebuilts/rust"].revision' parsed_data.json)
           RUST_HASH=$(get_hash "$RUST_NAME" "$RUST_REV")
           echo "rust_hash=${RUST_HASH}" >> $GITHUB_OUTPUT
           
+          # Common
           COMMON_NAME=$(jq -r '.kernel["common"].name' parsed_data.json)
           COMMON_REV=$(jq -r '.kernel["common"].revision' parsed_data.json)
           COMMON_HASH=$(get_hash "$COMMON_NAME" "$COMMON_REV")
           echo "common_hash=${COMMON_HASH}" >> $GITHUB_OUTPUT
           
+          # Common tag
           curl -fsL "https://android.googlesource.com/${COMMON_NAME}/+refs?format=JSON" | sed '1d' > common_refs.json
           
           COMMON_TAG=$(python3 << 'PYEOF'
@@ -162,11 +185,11 @@ jobs:
           PYEOF
           )
           echo "common_tag=${COMMON_TAG}" >> $GITHUB_OUTPUT
+          echo "Resolved common tag: $COMMON_TAG"
 
       - name: Generate Final JSON
         run: |
           MANIFEST_ID="${{ steps.download.outputs.manifest_id }}"
-          OUTPUT_FILE="env-${MANIFEST_ID}.json"
           
           python3 << EOF
           import json
@@ -177,7 +200,7 @@ jobs:
           with open('parsed_data.json', 'r') as f:
               data = json.load(f)
           
-          clang_ver = "${{ steps.download.outputs.clang_choice || github.event.inputs.clang_choice }}"
+          clang_ver = "${{ github.event.inputs.clang_choice }}"
           common_tag = "${{ steps.resolve.outputs.common_tag }}"
           common_name = data['kernel']['common']['name']
           
@@ -196,10 +219,20 @@ jobs:
               }
           }
           
+          # Kernel 组件
           for path, info in data['kernel'].items():
+              if path == 'common':
+                  hash_val = "${{ steps.resolve.outputs.common_hash }}"
+              elif path == 'prebuilts/rust':
+                  hash_val = "${{ steps.resolve.outputs.rust_hash }}"
+              elif path == 'prebuilts/clang-tools':
+                  hash_val = "${{ steps.resolve.outputs.clang_tools_hash }}"
+              else:
+                  hash_val = info["revision"]
+              
               env_config["components"][path] = {
                   "name": info["name"],
-                  "revision": "${{ steps.resolve.outputs.common_hash }}" if path == "common" else "${{ steps.resolve.outputs.rust_hash }}" if path == "prebuilts/rust" else "${{ steps.resolve.outputs.clang_tools_hash }}",
+                  "revision": hash_val,
                   "original_branch": info["revision"],
                   "source": info["source"]
               }
@@ -207,10 +240,20 @@ jobs:
                   env_config["components"][path]["tag"] = common_tag
                   env_config["components"][path]["download_url"] = f"https://android.googlesource.com/{common_name}/+archive/refs/tags/{common_tag}.tar.gz"
           
+          # Clang 组件
           for path, info in data['clang'].items():
+              if path == 'prebuilts/clang/host/linux-x86':
+                  hash_val = "${{ steps.resolve.outputs.clang_hash }}"
+              elif path == 'prebuilts/build-tools':
+                  hash_val = "${{ steps.resolve.outputs.build_tools_hash }}"
+              elif path == 'toolchain/llvm-project':
+                  hash_val = "${{ steps.resolve.outputs.llvm_hash }}"
+              else:
+                  hash_val = info["revision"]
+              
               env_config["components"][path] = {
                   "name": info["name"],
-                  "revision": info["revision"],
+                  "revision": hash_val,
                   "source": info["source"]
               }
           
