@@ -30,12 +30,11 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y jq curl git 
+          sudo apt-get install -y jq curl git
 
       - name: Download Manifests
         id: download
         run: |
-          # 封装下载函数，增加重试和基础校验
           download_manifest() {
             local url=$1
             local output=$2
@@ -50,14 +49,11 @@ jobs:
             fi
           }
 
-          # 1. 下载 Kernel Manifest
           download_manifest "${{ github.event.inputs.kernel_manifest_url }}" "kernel_manifest.xml"
 
-          # 2. 根据选择自动匹配 Clang Manifest URL (减少 case 冗余)
-          # 注意：这里的 ID 依然作为映射，但增加了版本校验逻辑
           declare -A clang_map=( ["clang-r536225"]="14043575" ["clang-r547379"]="13290119" )
           MANIFEST_ID=${clang_map[${{ github.event.inputs.clang_choice }}]}
-          CLANG_URL="https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+/refs/heads/main-kernel-2025/clang-${{ github.event.inputs.clang_choice }}/manifest_${MANIFEST_ID}.xml?format=TEXT"
+          CLANG_URL="https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+/refs/heads/main-kernel-2025/${{ github.event.inputs.clang_choice }}/manifest_${MANIFEST_ID}.xml?format=TEXT"
           
           download_manifest "$CLANG_URL" "clang_manifest.xml"
           echo "manifest_id=$MANIFEST_ID" >> $GITHUB_OUTPUT
@@ -89,14 +85,12 @@ jobs:
                   print(f"Error parsing {file_path}: {e}")
                   sys.exit(1)
 
-          # 解析两个 Manifest
           kernel_targets = {'common', 'prebuilts/rust', 'prebuilts/clang-tools'}
           clang_targets = {'prebuilts/clang/host/linux-x86', 'prebuilts/build-tools', 'toolchain/llvm-project'}
           
           k_data = parse_xml('kernel_manifest.xml', kernel_targets)
           c_data = parse_xml('clang_manifest.xml', clang_targets)
 
-          # 保存中间结果供后续 Step 使用
           with open('parsed_data.json', 'w') as f:
               json.dump({'kernel': k_data, 'clang': c_data}, f)
           EOF
@@ -109,46 +103,122 @@ jobs:
           
           curl -fsL --retry 3 "$CONST_URL" | base64 -d > build.constants
           
-          # 提取版本
           REQ_CLANG=$(grep "^CLANG_VERSION=" build.constants | cut -d'=' -f2 | tr -d '"')
           REQ_RUST=$(grep "^RUSTC_VERSION=" build.constants | cut -d'=' -f2 | tr -d '"')
           
           echo "Required Clang: $REQ_CLANG"
           echo "Selected Clang: ${{ github.event.inputs.clang_choice }}"
 
-          # 一致性校验：如果内核要求的 Clang 与用户选的不符，发出警告但继续（或根据需求 exit 1）
-          if [[ "$REQ_CLANG" != *"${{ github.event.inputs.clang_choice }}"* ]]; then
-            echo "::warning:: Version Mismatch! Kernel prefers $REQ_CLANG but you chose ${{ github.event.inputs.clang_choice }}"
-          fi
-
           echo "req_clang=$REQ_CLANG" >> $GITHUB_OUTPUT
           echo "req_rust=$REQ_RUST" >> $GITHUB_OUTPUT
 
-      - name: Final Resolve & Export
-        id: finalize
+      - name: Resolve Hashes and Latest Tag
+        id: resolve
         run: |
-          # 提取 Hash 和 Tag 的逻辑保持不变，但增加 metadata
-          # (此处省略重复的 git ls-remote 逻辑以保持篇幅，建议保留原逻辑)
+          get_hash() {
+            local repo=$1
+            local rev=$2
+            if [[ "$rev" =~ ^[0-9a-f]{40}$ ]]; then
+              echo "$rev"
+            else
+              git ls-remote "https://android.googlesource.com/${repo}" "$rev" | cut -f1 | head -1
+            fi
+          }
           
-          # 生成带 Metadata 的最终 JSON
-          TIMESTAMP=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
-          RUN_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          CLANG_TOOLS_NAME=$(jq -r '.kernel["prebuilts/clang-tools"].name' parsed_data.json)
+          CLANG_TOOLS_REV=$(jq -r '.kernel["prebuilts/clang-tools"].revision' parsed_data.json)
+          CLANG_TOOLS_HASH=$(get_hash "$CLANG_TOOLS_NAME" "$CLANG_TOOLS_REV")
+          echo "clang_tools_hash=${CLANG_TOOLS_HASH}" >> $GITHUB_OUTPUT
           
-          jq -n \
-            --arg ts "$TIMESTAMP" \
-            --arg run "$RUN_URL" \
-            --arg mid "${{ steps.download.outputs.manifest_id }}" \
-            --arg rc "${{ steps.constants.outputs.req_clang }}" \
-            --arg rr "${{ steps.constants.outputs.req_rust }}" \
-            '{
-              metadata: { last_update: $ts, generator_run: $run },
-              env_id: $mid,
-              requirements: { clang: $rc, rust: $rr },
-              components: {} 
-            }' > "env-${{ steps.download.outputs.manifest_id }}.json"
+          RUST_NAME=$(jq -r '.kernel["prebuilts/rust"].name' parsed_data.json)
+          RUST_REV=$(jq -r '.kernel["prebuilts/rust"].revision' parsed_data.json)
+          RUST_HASH=$(get_hash "$RUST_NAME" "$RUST_REV")
+          echo "rust_hash=${RUST_HASH}" >> $GITHUB_OUTPUT
           
-          # 合并之前解析的组件数据
-          # ... (使用 jq merge 将解析到的组件填入 components)
+          COMMON_NAME=$(jq -r '.kernel["common"].name' parsed_data.json)
+          COMMON_REV=$(jq -r '.kernel["common"].revision' parsed_data.json)
+          COMMON_HASH=$(get_hash "$COMMON_NAME" "$COMMON_REV")
+          echo "common_hash=${COMMON_HASH}" >> $GITHUB_OUTPUT
+          
+          curl -fsL "https://android.googlesource.com/${COMMON_NAME}/+refs?format=JSON" | sed '1d' > common_refs.json
+          
+          COMMON_TAG=$(python3 << 'PYEOF'
+          import json
+          
+          with open('common_refs.json', 'r') as f:
+              data = json.load(f)
+          
+          tags = []
+          for ref in data.keys():
+              if 'refs/tags/android16-6.12-2025-06_r' in ref:
+                  r_num = int(ref.split('_r')[-1])
+                  tags.append((r_num, ref.replace('refs/tags/', '')))
+          
+          if tags:
+              tags.sort(key=lambda x: x[0], reverse=True)
+              print(tags[0][1])
+          else:
+              print("unknown")
+          PYEOF
+          )
+          echo "common_tag=${COMMON_TAG}" >> $GITHUB_OUTPUT
+
+      - name: Generate Final JSON
+        run: |
+          MANIFEST_ID="${{ steps.download.outputs.manifest_id }}"
+          OUTPUT_FILE="env-${MANIFEST_ID}.json"
+          
+          python3 << EOF
+          import json
+          import os
+          
+          manifest_id = "${MANIFEST_ID}"
+          
+          with open('parsed_data.json', 'r') as f:
+              data = json.load(f)
+          
+          clang_ver = "${{ steps.download.outputs.clang_choice || github.event.inputs.clang_choice }}"
+          common_tag = "${{ steps.resolve.outputs.common_tag }}"
+          common_name = data['kernel']['common']['name']
+          
+          env_config = {
+              "environment": manifest_id,
+              "last_update": os.popen('date -u +"%Y-%m-%dT%H:%M:%SZ"').read().strip(),
+              "kernel": {
+                  "branch": data['kernel']['common']['revision'],
+                  "rust_version": "${{ steps.constants.outputs.req_rust }}",
+                  "clang_version": "${{ steps.constants.outputs.req_clang }}"
+              },
+              "components": {},
+              "clang_toolchain": {
+                  "version": clang_ver,
+                  "manifest": manifest_id
+              }
+          }
+          
+          for path, info in data['kernel'].items():
+              env_config["components"][path] = {
+                  "name": info["name"],
+                  "revision": "${{ steps.resolve.outputs.common_hash }}" if path == "common" else "${{ steps.resolve.outputs.rust_hash }}" if path == "prebuilts/rust" else "${{ steps.resolve.outputs.clang_tools_hash }}",
+                  "original_branch": info["revision"],
+                  "source": info["source"]
+              }
+              if path == "common":
+                  env_config["components"][path]["tag"] = common_tag
+                  env_config["components"][path]["download_url"] = f"https://android.googlesource.com/{common_name}/+archive/refs/tags/{common_tag}.tar.gz"
+          
+          for path, info in data['clang'].items():
+              env_config["components"][path] = {
+                  "name": info["name"],
+                  "revision": info["revision"],
+                  "source": info["source"]
+              }
+          
+          with open(f'env-{manifest_id}.json', 'w') as f:
+              json.dump(env_config, f, indent=2)
+          
+          print(f"Generated env-{manifest_id}.json")
+          EOF
 
       - name: Commit changes
         run: |
