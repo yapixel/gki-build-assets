@@ -164,9 +164,14 @@ jobs:
           COMMON_HASH=$(get_hash "$COMMON_NAME" "$COMMON_REV")
           echo "common_hash=${COMMON_HASH}" >> $GITHUB_OUTPUT
           
-          # 获取 common 的最新 _rXX tag（android16-6.12-2025-06 开头）
+          # 调试：获取 common 的最新 _rXX tag
           COMMON_PREFIX="android16-6.12-2025-06"
-          COMMON_TAG=$(git ls-remote --tags "https://android.googlesource.com/${COMMON_NAME}" | grep -E "refs/tags/${COMMON_PREFIX}_r[0-9]+" | sort -t'r' -k2 -n | tail -1 | cut -f2 | sed 's|refs/tags/||')
+          echo "=== All matching tags ==="
+          git ls-remote --tags "https://android.googlesource.com/${COMMON_NAME}" | grep -E "refs/tags/${COMMON_PREFIX}_r[0-9]+" | grep -v '\^{}'
+          echo "=== After sort ==="
+          git ls-remote --tags "https://android.googlesource.com/${COMMON_NAME}" | grep -E "refs/tags/${COMMON_PREFIX}_r[0-9]+" | grep -v '\^{}' | sort -t'r' -k2 -n
+          
+          COMMON_TAG=$(git ls-remote --tags "https://android.googlesource.com/${COMMON_NAME}" | grep -E "refs/tags/${COMMON_PREFIX}_r[0-9]+" | grep -v '\^{}' | sort -t'r' -k2 -n | tail -1 | cut -f2 | sed 's|refs/tags/||')
           echo "common_tag=${COMMON_TAG}" >> $GITHUB_OUTPUT
           echo "Resolved common tag: $COMMON_TAG"
 
