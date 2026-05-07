@@ -1,0 +1,79 @@
+name: Download and Upload Assets
+
+on:
+  workflow_dispatch:
+    inputs:
+      kernel_tag:
+        description: 'Kernel tag (e.g. android16-6.12-2025-06_r58)'
+        required: true
+        type: string
+        default: 'android16-6.12-2025-06_r58'
+      clang_version:
+        description: 'Clang version (e.g. clang-r547379)'
+        required: true
+        type: choice
+        options:
+          - 'clang-r547379'
+        default: 'clang-r547379'
+      rust_version:
+        description: 'Rust version'
+        required: true
+        type: string
+        default: '1.83.0'
+      release_tag:
+        description: 'Release tag for this upload'
+        required: true
+        type: string
+        default: 'android16-6.12-2025-06_r58'
+
+permissions:
+  contents: write
+
+jobs:
+  upload:
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install aria2
+        run: sudo apt-get update && sudo apt-get install -y aria2
+
+      - name: Download and Upload Kernel
+        run: |
+          KERNEL_URL="https://android.googlesource.com/kernel/common/+archive/refs/tags/${{ github.event.inputs.kernel_tag }}.tar.gz"
+          KERNEL_FILE="common-${{ github.event.inputs.kernel_tag }}.tar.gz"
+          
+          echo "Downloading kernel: $KERNEL_URL"
+          aria2c -s16 -x16 -k1M "$KERNEL_URL" -o "$KERNEL_FILE"
+          
+          echo "Creating/updating release ${{ github.event.inputs.release_tag }}"
+          gh release view "${{ github.event.inputs.release_tag }}" &>/dev/null || \
+            gh release create "${{ github.event.inputs.release_tag }}" --title "${{ github.event.inputs.release_tag }}" --notes "Build assets"
+          
+          echo "Uploading $KERNEL_FILE"
+          gh release upload "${{ github.event.inputs.release_tag }}" "$KERNEL_FILE" --clobber
+
+      - name: Download and Upload Clang
+        run: |
+          CLANG_URL="https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/android16-release/${{ github.event.inputs.clang_version }}.tar.gz"
+          CLANG_FILE="${{ github.event.inputs.clang_version }}.tar.gz"
+          
+          echo "Downloading clang: $CLANG_URL"
+          aria2c -s16 -x16 -k1M "$CLANG_URL" -o "$CLANG_FILE"
+          
+          echo "Uploading $CLANG_FILE"
+          gh release upload "${{ github.event.inputs.release_tag }}" "$CLANG_FILE" --clobber
+
+      - name: Download and Upload Rust
+        run: |
+          RUST_URL="https://github.com/MidoriKSU/dami-kernel-build/releases/download/1.0/rust-${{ github.event.inputs.rust_version }}.tar.gz"
+          RUST_FILE="rust-${{ github.event.inputs.rust_version }}.tar.gz"
+          
+          echo "Downloading rust: $RUST_URL"
+          aria2c -s16 -x16 -k1M "$RUST_URL" -o "$RUST_FILE"
+          
+          echo "Uploading $RUST_FILE"
+          gh release upload "${{ github.event.inputs.release_tag }}" "$RUST_FILE" --clobber
