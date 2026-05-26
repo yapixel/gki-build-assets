@@ -13,16 +13,16 @@ jobs:
     env:
       GH_TOKEN: ${{ github.token }}
       KERNEL_TAG: android14-6.1-2026-03_r13
-      RELEASE_TAG: android14-6.1-2026-03_r13
+      RELEASE_TAG: kernel-archive-android14-6.1-2026-03_r13
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Install dependencies
+      - name: Install wget
         run: |
           sudo apt-get update
-          sudo apt-get install -y aria2 tar gzip
+          sudo apt-get install -y wget
 
       - name: Download and upload kernel archive
         run: |
@@ -35,12 +35,11 @@ jobs:
           echo "Downloading kernel tag: ${KERNEL_TAG}"
           echo "URL: ${KERNEL_URL}"
 
-          aria2c \
-            -s16 \
-            -x16 \
-            -k1M \
-            --allow-overwrite=true \
-            -o "${KERNEL_FILE}" \
+          wget \
+            --tries=5 \
+            --timeout=60 \
+            --continue \
+            -O "${KERNEL_FILE}" \
             "${KERNEL_URL}"
 
           echo "Downloaded file:"
