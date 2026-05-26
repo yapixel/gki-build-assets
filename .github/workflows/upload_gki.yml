@@ -9,30 +9,62 @@ permissions:
 jobs:
   upload:
     runs-on: ubuntu-latest
+
     env:
       GH_TOKEN: ${{ github.token }}
-      # 定义固定的资源信息
-      KERNEL_COMMIT: 85a3b1c62eafe7162de570b1b5629a6bb654010d
-      RELEASE_TAG: kernel-archive-release
+      KERNEL_TAG: android14-6.1-2026-03_r13
+      RELEASE_TAG: android14-6.1-2026-03_r13
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Install aria2
-        run: sudo apt-get update && sudo apt-get install -y aria2
-
-      - name: Download and Upload Kernel
+      - name: Install dependencies
         run: |
-          KERNEL_URL="https://android.googlesource.com/kernel/common/+archive/${{ env.KERNEL_COMMIT }}.tar.gz"
-          KERNEL_FILE="common-${{ env.KERNEL_COMMIT }}.tar.gz"
-          
-          echo "Downloading kernel commit: ${{ env.KERNEL_COMMIT }}"
-          aria2c -s16 -x16 -k1M "$KERNEL_URL" -o "$KERNEL_FILE"
-          
-          echo "Checking/Creating release: ${{ env.RELEASE_TAG }}"
-          # 如果 Release 不存在则创建，存在则忽略错误
-          gh release view "${{ env.RELEASE_TAG }}" &>/dev/null || \
-            gh release create "${{ env.RELEASE_TAG }}" --title "Kernel Archive ${{ env.KERNEL_COMMIT }}" --notes "Automated upload of kernel source archive."
-          
-          echo "Uploading $KERNEL_FILE"
-          gh release upload "${{ env.RELEASE_TAG }}" "$KERNEL_FILE" --clobber
+          sudo apt-get update
+          sudo apt-get install -y aria2 tar gzip
+
+      - name: Download and upload kernel archive
+        run: |
+          set -e
+
+          KERNEL_URL="https://android.googlesource.com/kernel/common/+archive/refs/tags/${KERNEL_TAG}.tar.gz"
+          KERNEL_FILE="common-${KERNEL_TAG}.tar.gz"
+          SHA_FILE="${KERNEL_FILE}.sha256"
+
+          echo "Downloading kernel tag: ${KERNEL_TAG}"
+          echo "URL: ${KERNEL_URL}"
+
+          aria2c \
+            -s16 \
+            -x16 \
+            -k1M \
+            --allow-overwrite=true \
+            -o "${KERNEL_FILE}" \
+            "${KERNEL_URL}"
+
+          echo "Downloaded file:"
+          ls -lh "${KERNEL_FILE}"
+
+          echo "Verifying archive..."
+          tar -tzf "${KERNEL_FILE}" > /dev/null
+
+          echo "Generating checksum..."
+          sha256sum "${KERNEL_FILE}" | tee "${SHA_FILE}"
+
+          echo "Checking or creating release: ${RELEASE_TAG}"
+          if gh release view "${RELEASE_TAG}" >/dev/null 2>&1; then
+            echo "Release already exists: ${RELEASE_TAG}"
+          else
+            gh release create "${RELEASE_TAG}" \
+              --title "Kernel Archive ${KERNEL_TAG}" \
+              --notes "Automated upload of Android GKI common kernel source archive: ${KERNEL_TAG}"
+          fi
+
+          echo "Uploading assets..."
+          gh release upload "${RELEASE_TAG}" \
+            "${KERNEL_FILE}" \
+            "${SHA_FILE}" \
+            --clobber
+
+          echo "Done."
