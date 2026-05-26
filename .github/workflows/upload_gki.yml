@@ -19,36 +19,61 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Install wget
+      - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y wget
+          sudo apt-get install -y wget git tar gzip
 
       - name: Download and upload kernel archive
         run: |
-          set -e
+          set -euo pipefail
 
           KERNEL_URL="https://android.googlesource.com/kernel/common/+archive/refs/tags/${KERNEL_TAG}.tar.gz"
           KERNEL_FILE="common-${KERNEL_TAG}.tar.gz"
           SHA_FILE="${KERNEL_FILE}.sha256"
 
-          echo "Downloading kernel tag: ${KERNEL_TAG}"
-          echo "URL: ${KERNEL_URL}"
+          echo "Kernel tag: ${KERNEL_TAG}"
+          echo "Kernel URL: ${KERNEL_URL}"
+          echo "Output file: ${KERNEL_FILE}"
 
-          wget \
-            --tries=5 \
-            --timeout=60 \
-            --continue \
+          echo "Downloading kernel archive with wget..."
+          if wget \
+            --tries=10 \
+            --waitretry=20 \
+            --timeout=120 \
+            --retry-connrefused \
+            --retry-on-http-error=429,500,502,503,504 \
+            --user-agent="Mozilla/5.0 GitHub-Actions" \
             -O "${KERNEL_FILE}" \
-            "${KERNEL_URL}"
+            "${KERNEL_URL}"; then
+            echo "wget download succeeded."
+          else
+            echo "wget archive download failed. Falling back to git clone..."
 
-          echo "Downloaded file:"
+            rm -f "${KERNEL_FILE}"
+            rm -rf common-src
+
+            git clone \
+              --depth=1 \
+              --branch="${KERNEL_TAG}" \
+              https://android.googlesource.com/kernel/common.git \
+              common-src
+
+            tar \
+              --exclude='.git' \
+              -czf "${KERNEL_FILE}" \
+              -C common-src .
+
+            rm -rf common-src
+          fi
+
+          echo "Downloaded archive:"
           ls -lh "${KERNEL_FILE}"
 
-          echo "Verifying archive..."
+          echo "Verifying tar.gz archive..."
           tar -tzf "${KERNEL_FILE}" > /dev/null
 
-          echo "Generating checksum..."
+          echo "Generating SHA256..."
           sha256sum "${KERNEL_FILE}" | tee "${SHA_FILE}"
 
           echo "Checking or creating release: ${RELEASE_TAG}"
@@ -60,7 +85,7 @@ jobs:
               --notes "Automated upload of Android GKI common kernel source archive: ${KERNEL_TAG}"
           fi
 
-          echo "Uploading assets..."
+          echo "Uploading release assets..."
           gh release upload "${RELEASE_TAG}" \
             "${KERNEL_FILE}" \
             "${SHA_FILE}" \
