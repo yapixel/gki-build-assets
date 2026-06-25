@@ -12,8 +12,8 @@ jobs:
 
     env:
       GH_TOKEN: ${{ github.token }}
-      KERNEL_TAG: android14-6.1-2026-03_r13
-      RELEASE_TAG: kernel-archive-android14-6.1-2026-03_r13
+      KERNEL_TAG: android14-6.1-2026-06_r1
+      RELEASE_TAG: kernel-archive-android14-6.1-2026-06_r1
 
     steps:
       - name: Checkout repository
