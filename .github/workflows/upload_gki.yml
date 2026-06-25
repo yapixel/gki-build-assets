@@ -12,8 +12,8 @@ jobs:
 
     env:
       GH_TOKEN: ${{ github.token }}
-      KERNEL_TAG: android14-6.1-lts
-      RELEASE_TAG: kernel-archive-android14-6.1-lts
+      KERNEL_TAG: android16-6.12-2025-09-r35
+      RELEASE_TAG: kernel-archive-android16-6.12-2025-09-r35
 
     steps:
       - name: Checkout repository
@@ -28,7 +28,7 @@ jobs:
         run: |
           set -euo pipefail
 
-          KERNEL_URL="https://android.googlesource.com/kernel/common/+archive/refs/heads/android14-6.1-lts.tar.gz"
+          KERNEL_URL="https://android.googlesource.com/kernel/common/+archive/refs/heads/android16-6.12-2025-09-r35.tar.gz"
           KERNEL_FILE="common-${KERNEL_TAG}.tar.gz"
           SHA_FILE="${KERNEL_FILE}.sha256"
 
