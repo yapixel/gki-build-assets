@@ -28,7 +28,7 @@ jobs:
         run: |
           set -euo pipefail
 
-          KERNEL_URL="https://android.googlesource.com/kernel/common/+archive/refs/heads/android16-6.12-2025-09-r35.tar.gz"
+          KERNEL_URL="https://android.googlesource.com/kernel/common/+archive/refs/heads/android16-6.12-2025-09_r35.tar.gz"
           KERNEL_FILE="common-${KERNEL_TAG}.tar.gz"
           SHA_FILE="${KERNEL_FILE}.sha256"
 
