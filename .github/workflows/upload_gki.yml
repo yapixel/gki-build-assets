@@ -12,12 +12,12 @@ jobs:
 
     env:
       GH_TOKEN: ${{ github.token }}
-      KERNEL_TAG: android16-6.12-2025-09-r35
-      RELEASE_TAG: kernel-archive-android16-6.12-2025-09-r35
+      KERNEL_TAG: android16-6.12-2025-09_r35
+      RELEASE_TAG: kernel-archive-android16-6.12-2025-09_r35
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Install dependencies
         run: |
