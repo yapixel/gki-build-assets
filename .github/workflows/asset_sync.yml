@@ -1,30 +1,35 @@
+```yaml
 name: Download and Upload Assets
 
 on:
   workflow_dispatch:
     inputs:
       kernel_tag:
-        description: 'Kernel tag (e.g. android16-6.12-2025-06_r58)'
+        description: 'Kernel tag'
         required: true
         type: string
-        default: 'android16-6.12-2025-06_r58'
+        default: 'android16-6.12.38_r00'
+
       clang_version:
-        description: 'Clang version (e.g. clang-r547379)'
+        description: 'Clang version'
         required: true
         type: choice
         options:
+          - 'clang-r536225'
           - 'clang-r547379'
-        default: 'clang-r547379'
+        default: 'clang-r536225'
+
       rust_version:
         description: 'Rust version'
         required: true
         type: string
-        default: '1.83.0'
+        default: '1.82.0'
+
       release_tag:
         description: 'Release tag for this upload'
         required: true
         type: string
-        default: 'android16-6.12-2025-06_r58'
+        default: 'android16-6.12.38_r00'
 
 permissions:
   contents: write
@@ -32,48 +37,116 @@ permissions:
 jobs:
   upload:
     runs-on: ubuntu-latest
+
     env:
       GH_TOKEN: ${{ github.token }}
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
       - name: Install aria2
-        run: sudo apt-get update && sudo apt-get install -y aria2
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y aria2
 
       - name: Download and Upload Kernel
         run: |
-          KERNEL_URL="https://android.googlesource.com/kernel/common/+archive/refs/tags/${{ github.event.inputs.kernel_tag }}.tar.gz"
-          KERNEL_FILE="common-${{ github.event.inputs.kernel_tag }}.tar.gz"
-          
-          echo "Downloading kernel: $KERNEL_URL"
-          aria2c -s16 -x16 -k1M "$KERNEL_URL" -o "$KERNEL_FILE"
-          
-          echo "Creating/updating release ${{ github.event.inputs.release_tag }}"
-          gh release view "${{ github.event.inputs.release_tag }}" &>/dev/null || \
-            gh release create "${{ github.event.inputs.release_tag }}" --title "${{ github.event.inputs.release_tag }}" --notes "Build assets"
-          
-          echo "Uploading $KERNEL_FILE"
-          gh release upload "${{ github.event.inputs.release_tag }}" "$KERNEL_FILE" --clobber
+          set -euo pipefail
+
+          KERNEL_TAG="${{ github.event.inputs.kernel_tag }}"
+          RELEASE_TAG="${{ github.event.inputs.release_tag }}"
+
+          KERNEL_URL="https://android.googlesource.com/kernel/common/+archive/refs/tags/${KERNEL_TAG}.tar.gz"
+          KERNEL_FILE="common-${KERNEL_TAG}.tar.gz"
+
+          echo "Downloading kernel:"
+          echo "  tag:  ${KERNEL_TAG}"
+          echo "  URL:  ${KERNEL_URL}"
+          echo "  file: ${KERNEL_FILE}"
+
+          aria2c \
+            -s16 \
+            -x16 \
+            -k1M \
+            --file-allocation=none \
+            "$KERNEL_URL" \
+            -o "$KERNEL_FILE"
+
+          test -s "$KERNEL_FILE"
+
+          echo "Creating/updating release: ${RELEASE_TAG}"
+
+          gh release view "$RELEASE_TAG" &>/dev/null || \
+            gh release create "$RELEASE_TAG" \
+              --title "$RELEASE_TAG" \
+              --notes "Android 16 GKI build assets for ${KERNEL_TAG}"
+
+          echo "Uploading ${KERNEL_FILE}"
+
+          gh release upload "$RELEASE_TAG" \
+            "$KERNEL_FILE" \
+            --clobber
 
       - name: Download and Upload Clang
         run: |
-          CLANG_URL="https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/android16-release/${{ github.event.inputs.clang_version }}.tar.gz"
-          CLANG_FILE="${{ github.event.inputs.clang_version }}.tar.gz"
-          
-          echo "Downloading clang: $CLANG_URL"
-          aria2c -s16 -x16 -k1M "$CLANG_URL" -o "$CLANG_FILE"
-          
-          echo "Uploading $CLANG_FILE"
-          gh release upload "${{ github.event.inputs.release_tag }}" "$CLANG_FILE" --clobber
+          set -euo pipefail
+
+          CLANG_VERSION="${{ github.event.inputs.clang_version }}"
+          RELEASE_TAG="${{ github.event.inputs.release_tag }}"
+
+          CLANG_URL="https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/android16-release/${CLANG_VERSION}.tar.gz"
+          CLANG_FILE="${CLANG_VERSION}.tar.gz"
+
+          echo "Downloading Clang:"
+          echo "  version: ${CLANG_VERSION}"
+          echo "  URL:     ${CLANG_URL}"
+          echo "  file:    ${CLANG_FILE}"
+
+          aria2c \
+            -s16 \
+            -x16 \
+            -k1M \
+            --file-allocation=none \
+            "$CLANG_URL" \
+            -o "$CLANG_FILE"
+
+          test -s "$CLANG_FILE"
+
+          echo "Uploading ${CLANG_FILE}"
+
+          gh release upload "$RELEASE_TAG" \
+            "$CLANG_FILE" \
+            --clobber
 
       - name: Download and Upload Rust
         run: |
-          RUST_URL="https://github.com/MidoriKSU/dami-kernel-build/releases/download/1.0/rust-${{ github.event.inputs.rust_version }}.tar.gz"
-          RUST_FILE="rust-${{ github.event.inputs.rust_version }}.tar.gz"
-          
-          echo "Downloading rust: $RUST_URL"
-          aria2c -s16 -x16 -k1M "$RUST_URL" -o "$RUST_FILE"
-          
-          echo "Uploading $RUST_FILE"
-          gh release upload "${{ github.event.inputs.release_tag }}" "$RUST_FILE" --clobber
+          set -euo pipefail
+
+          RUST_VERSION="${{ github.event.inputs.rust_version }}"
+          RELEASE_TAG="${{ github.event.inputs.release_tag }}"
+
+          RUST_URL="https://github.com/MidoriKSU/dami-kernel-build/releases/download/1.0/rust-${RUST_VERSION}.tar.gz"
+          RUST_FILE="rust-${RUST_VERSION}.tar.gz"
+
+          echo "Downloading Rust:"
+          echo "  version: ${RUST_VERSION}"
+          echo "  URL:     ${RUST_URL}"
+          echo "  file:    ${RUST_FILE}"
+
+          aria2c \
+            -s16 \
+            -x16 \
+            -k1M \
+            --file-allocation=none \
+            "$RUST_URL" \
+            -o "$RUST_FILE"
+
+          test -s "$RUST_FILE"
+
+          echo "Uploading ${RUST_FILE}"
+
+          gh release upload "$RELEASE_TAG" \
+            "$RUST_FILE" \
+            --clobber
+```
