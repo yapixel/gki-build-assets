@@ -28,7 +28,7 @@ on:
         description: 'Release tag for this upload'
         required: true
         type: string
-        default: 'android16-6.12-2025-09_r15'
+        default: 'android16-6.12-2025-09_r38'
 
 permissions:
   contents: write
