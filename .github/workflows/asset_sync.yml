@@ -7,7 +7,7 @@ on:
         description: 'Kernel tag'
         required: true
         type: string
-        default: 'android16-6.12-2025-09_r15'
+        default: 'android16-6.12-2025-09_r38'
         
       clang_version:
         description: 'Clang version'
